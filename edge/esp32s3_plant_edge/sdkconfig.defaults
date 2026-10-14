@@ -1,0 +1,20 @@
+# =====================================================================
+#  ESP32-S3-WROOM-1-N8R8 @ ESP32-S3-DevKitC-1 v1.1
+#  本文件由 idf.py 在生成 sdkconfig 时优先读取, 适合放"必须固化"的配置
+# =====================================================================
+
+# 目标芯片
+CONFIG_IDF_TARGET="esp32s3"
+
+# 模组实际是 8MB Flash (esptool 实测: Detected flash size: 8MB, Quad, 3.3V)
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# ---------------------------------------------------------------------
+# 可选: 芯片内封 8MB Octal PSRAM (3.3V)
+# 需要用到 PSRAM 时, 把下面三行的注释去掉, 然后执行:
+#     idf.py fullclean ; idf.py build
+# 注意: 首次开启 PSRAM 建议先单独验证能否正常启动, 避免和其它配置互相干扰
+# ---------------------------------------------------------------------
+# CONFIG_SPIRAM=y
+# CONFIG_SPIRAM_MODE_OCT=y
+# CONFIG_SPIRAM_SPEED_80M=y

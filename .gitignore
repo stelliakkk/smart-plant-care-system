@@ -1,0 +1,59 @@
+# =====================================================================
+#  基于大模型的植物养护系统  .gitignore
+#  三端合一: edge(ESP32) / backend(Python) / frontend(Vue)
+#  说明: 本文件已准备好, 待你建好远程仓库后直接 git init && git add . 即可
+# =====================================================================
+
+# ---------------------- 边缘端 ESP-IDF ----------------------
+edge/**/build/
+edge/**/sdkconfig
+edge/**/sdkconfig.old
+edge/**/managed_components/
+edge/**/dependencies.lock
+edge/**/.cache/
+edge/**/compile_commands.json
+*.bin
+*.elf
+*.map
+
+# 边缘端本地私有配置 (WiFi 密码 / 电脑的 MQTT 地址, ★ 绝不能提交)
+# 模板是 local_config.example.h, 每个人复制一份填自己的
+edge/**/main/local_config.h
+edge/**/main/generated_network_config.h
+# 由 start_dev.ps1 读取的本机 WiFi 档案，含密码，绝不能提交
+scripts/network_profiles.local.json
+
+# ---------------------- 后端 Python ----------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 后端数据与密钥 (★ 重要: 绝不能提交)
+backend/.env
+backend/data/*.db
+backend/data/*.db-journal
+# 清脏数据前留的数据库备份(安全网), 别提交
+backend/data/*.bak*
+backend/data/images/
+backend/logs/
+
+# ---------------------- 前端 Node ----------------------
+node_modules/
+dist/
+.vite/
+*.local
+
+# ---------------------- 通用 ----------------------
+.vscode/
+.idea/
+*.log
+Thumbs.db
+Desktop.ini
+
+# 本地历史留档, 不参与仓库
+_archive/

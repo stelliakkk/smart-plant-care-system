@@ -1,0 +1,10 @@
+{
+  "desk": {
+    "ssid": "YOUR_DESK_2_4G_SSID",
+    "password": "YOUR_DESK_WIFI_PASSWORD"
+  },
+  "debug": {
+    "ssid": "Debug",
+    "password": "YOUR_DEBUG_WIFI_PASSWORD"
+  }
+}

@@ -1,0 +1,18 @@
+## 组件依赖清单 (ESP-IDF 组件管理器读取本文件)
+##
+## 为什么 MQTT 写在这里?
+##   ESP-IDF v6.1 把 esp-mqtt 从内核组件里挪出去了 —— 在
+##   esp-idf/components/ 下已经找不到 mqtt 目录。它现在是"托管组件",
+##   要由组件管理器按需下载。不在这里声明依赖的话, 编译时就会
+##   "fatal error: mqtt_client.h: No such file or directory"。
+##
+## 首次 idf.py build 会自动联网下载到 managed_components/ 目录
+## (该目录已在 .gitignore 里, 不会提交到仓库)。
+##
+## 想手动更新依赖: idf.py update-dependencies
+
+dependencies:
+  idf: ">=6.0"
+  espressif/mqtt: "^1.0.0"
+  ds18b20: "^0.2.0"
+  espressif/cjson: "^1.7.19"

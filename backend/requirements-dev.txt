@@ -1,0 +1,12 @@
+# =====================================================================
+#  开发/调试用依赖(正式运行不需要)
+#  安装: pip install -r requirements-dev.txt
+# =====================================================================
+
+# 本机没装 Mosquitto 时, 用它起一个纯 Python 的 MQTT broker 顶上:
+#     python scripts/dev_broker.py
+# 换回真 Mosquitto 时只改 .env 里的 MQTT_HOST / MQTT_PORT, 代码不用动
+amqtt>=0.11
+
+# 自动化测试
+pytest>=8.0

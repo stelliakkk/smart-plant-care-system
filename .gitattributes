@@ -1,0 +1,35 @@
+# =====================================================================
+#  换行符与文本属性统一
+#  目的: 避免 Windows(CRLF) 与 Linux(LF) 互相"污染",
+#        防止 git 把整个文件误判为已修改
+# =====================================================================
+
+# 默认: 仓库内一律存 LF
+* text=auto eol=lf
+
+# Windows 脚本必须用 CRLF, 否则老版本 PowerShell 可能报错
+*.ps1  text eol=crlf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# 二进制文件: 不做任何换行符转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.bin   binary
+*.elf   binary
+*.db    binary
+*.p12   binary
+*.cer   binary
+
+# 按语言标记 diff 算法 (只看内容改动, 不看成行改动)
+*.c     text diff=c
+*.h     text diff=c
+*.py    text diff=python
+*.md    text diff=markdown
+*.js    text diff=javascript
+*.vue   text diff=html

@@ -1,0 +1,15 @@
+# AI Thinker style ESP32-CAM + OV2640
+# This is the original ESP32 target, not ESP32-S3.
+CONFIG_IDF_TARGET="esp32"
+
+# Typical ESP32-CAM modules ship with 4 MB flash.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# esp32-camera + HTTP/MQTT exceeds the 1 MB default factory partition.
+# 1.5 MB still fits comfortably in the module's 4 MB Flash.
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# ESP32-CAM has 4 MB external Quad PSRAM. Two JPEG frame buffers live there.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_SPEED_40M=y
