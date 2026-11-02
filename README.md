@@ -97,6 +97,8 @@ npm run build
 
 入口：[docs/README.md](docs/README.md)。
 
+硬件原理图：[SCH_Schematic1_2026-11-02.pdf](docs/hardware/SCH_Schematic1_2026-11-02.pdf)（4页，当前实物版本）。
+
 - [系统架构](docs/architecture.md)、[接线与实测边界](docs/hardware_wiring.md)
 - [手动控制](docs/manual_control.md)、[四路自动控制](docs/automation_control.md)
 - [HTTP接口](docs/api.md)、[MQTT契约](docs/mqtt_topics.md)

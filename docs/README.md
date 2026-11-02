@@ -6,6 +6,7 @@
 |---|---|
 | [architecture.md](architecture.md) | 三端职责、已实现和未验证范围 |
 | [hardware_wiring.md](hardware_wiring.md) | 传感器、执行器与下载接口 |
+| [硬件原理图PDF](hardware/SCH_Schematic1_2026-11-02.pdf) | 当前实物原理图，4页，原始PDF完整保留 |
 | [manual_control.md](manual_control.md) | 手动控制、回执、互斥与停止 |
 | [automation_control.md](automation_control.md) | 补光、喷洒、两路定时清水演示 |
 | [camera_vision_demo.md](camera_vision_demo.md) | 高清拍照、DeepSeek、7天保存 |
