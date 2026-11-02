@@ -1,11 +1,11 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useDeviceStore } from '@/store/device'
-import { fetchControlLog, stopAllOutputs, fetchAutomation, setAutomation } from '@/api/device'
+import { fetchControlLog, stopAllOutputs, fetchAutomation, setAutomation, savePumpSchedule } from '@/api/device'
 const store = useDeviceStore()
 const actuators = [
   {key:'pump',name:'补水泵',icon:'💧',preset:3000,max:30000},
-  {key:'fertilizer',name:'盐水/施肥泵',icon:'🧪',preset:2000,max:30000},
+  {key:'fertilizer',name:'施肥泵（清水演示）',icon:'🧪',preset:2000,max:30000},
   {key:'grow_light',name:'补光灯',icon:'💡',preset:5000,max:600000},
   {key:'spray',name:'农药泵',icon:'🌫️',preset:1500,max:30000},
 ]
@@ -14,14 +14,29 @@ const busy=ref('')
 const message=ref('')
 const records=ref([])
 const automation=ref({events:[]})
+const pumpForms=ref({pump:{interval:'',seconds:'',loaded:false},fertilizer:{interval:'',seconds:'',loaded:false}})
+async function saveSchedule(name) {
+  const form=pumpForms.value[name]
+  const ms=Math.round(Number(form.seconds)*1000)
+  if(!Number.isInteger(form.interval) || form.interval<60 || form.interval>604800 || !Number.isFinite(Number(form.seconds)) || ms<1 || ms>30000) {
+    message.value='间隔请输入60～604800的整数秒；运行时长请输入0.001～30秒';return
+  }
+  busy.value=name+'-schedule'
+  try {automation.value=await savePumpSchedule(name,form.interval,ms);message.value='参数已保存，自动已暂停；点击恢复自动开始计时';await refresh()}
+  catch(e) {message.value=e.response?.data?.detail || '保存失败，请检查后端'}
+  finally {busy.value=''}
+}
+function pumpEnabled(name) {return automation.value[name==='pump'?'pump_auto':'fertilizer_auto']}
+function pumpConfigured(name) {const p=automation.value.pump_schedules?.[name];return p?.interval_sec>=60 && p?.duration_ms>0}
+
 async function changeMode(actuator, enabled) {
   busy.value=actuator+"-mode"
   try { automation.value=await setAutomation(actuator, enabled);message.value="模式已保存，等待设备同步";await refresh() }
-  catch {message.value="模式修改失败，请检查后端"}
+  catch(e) {message.value=e.response?.data?.detail || "模式修改失败，请检查后端"}
   finally {busy.value=""}
 }
 const labels={pending:'等待板子确认',running:'输出已开启',done:'输出已关闭',rejected:'板子拒绝',failed:'执行失败',timeout:'回执超时，状态未知'}
-const reasons={duration_elapsed:'运行到时，已关闭',stopped_by_command:'收到关闭指令',output_on:'输出设置成功',output_off:'输出关闭成功',mqtt_disconnected:'网络断开，已请求关闭',actuator_busy:'该输出正在运行，请先关闭',invalid_duration:'运行时长不合法',command_expired:'指令已过期',dedupe_capacity:'指令处理繁忙，请稍后重试',output_start_failed:'设置输出失败',output_stop_failed:'关闭输出失败'}
+const reasons={duration_elapsed:'运行到时，已关闭',stopped_by_command:'收到关闭指令',output_on:'输出设置成功',output_off:'输出关闭成功',mqtt_disconnected:'网络断开，已请求关闭',actuator_busy:'该输出正在运行，请先关闭',invalid_duration:'运行时长不合法',command_expired:'指令已过期',dedupe_capacity:'指令处理繁忙，请稍后重试',output_start_failed:'设置输出失败',output_stop_failed:'关闭输出失败',pump_interlock:'另一泵正在运行，两泵互斥',auto_enabled:'自动模式已启用',auto_paused:'自动模式已暂停',mode_save_failed:'模式保存失败',auto_not_allowed:'自动模式或时长不允许'}
 let timer
 let fetching=false
 let disposed=false
@@ -31,7 +46,13 @@ async function refresh() {
   try {
     await store.refreshAll()
     const policy=await fetchAutomation()
-    if(!disposed) automation.value=policy
+    if(!disposed) {
+      automation.value=policy
+      for(const name of ['pump','fertilizer']) {
+        const form=pumpForms.value[name],schedule=policy.pump_schedules?.[name]
+        if(!form.loaded && schedule) {form.interval=schedule.interval_sec || '';form.seconds=schedule.duration_ms?schedule.duration_ms/1000:'';form.loaded=true}
+      }
+    }
     const res=await fetchControlLog()
     if(!disposed) records.value=res.items
   } catch { if(!disposed) message.value='操作记录加载失败，请检查后端' }
@@ -80,14 +101,35 @@ onBeforeUnmount(()=>{disposed=true;clearInterval(timer)})
       <button :disabled="busy!=='' || !store.backendOnline" @click="changeMode(a,true)">恢复自动</button>
       <button :disabled="busy!=='' || !store.backendOnline" @click="changeMode(a,false)">暂停自动</button>
     </div>
-    <p>光照：{{ automation.light_lux ?? '—' }} lux · 低于 3000 lux 持续 10 秒开灯；高于 4000 lux 持续 30 秒关灯。</p>
-    <p>补光判断：{{ !automation.light_auto?'自动暂停':automation.light_fault?'传感器异常':automation.light_lux<3000?'低光照，累计 10 秒后开启':automation.light_lux>4000?'高光照，累计 30 秒后关闭':'光照处于保持区间' }}</p>
+    <p>光照：{{ automation.light_lux ?? '—' }} lux · 低于 100 lux 持续 10 秒开灯；高于 300 lux 持续 30 秒关灯。</p>
+    <p>补光判断：{{ !automation.light_auto?'自动暂停':automation.light_fault?'传感器异常':automation.light_lux<100?'低光照，累计 10 秒后开启':automation.light_lux>300?'高光照，累计 30 秒后关闭':'光照处于保持区间' }}</p>
     <p v-if="automation.light_fault" class="alert">{{ automation.light_fault }}</p>
     <p>虫害连续检测：{{ automation.count || 0 }}/2 · 自动喷洒 2 秒</p>
     <p>冷却：{{ automation.cooldown_remaining_sec>0?Math.ceil(automation.cooldown_remaining_sec/60)+' 分钟剩余':'无冷却' }} <span v-if="automation.cooldown_remaining_sec>0">（截止 {{ new Date(automation.cooldown_until).toLocaleString() }}）</span></p>
     <p>{{ automation.last_reason }}</p>
     <p v-if="automation.spray_command_status">最近喷洒回执：{{ labels[automation.spray_command_status.result] || automation.spray_command_status.result }}</p>
     <p class="hint">手动操作暂停对应自动模式；手动喷洒也开始冷却。恢复自动不会清除冷却。冷却期间每 5 分钟拍照分析继续。</p>
+  </div>
+  <div class="grid grid-2">
+    <div v-for="name in ['pump','fertilizer']" :key="name" class="card">
+      <h2 class="card-title">{{ name==='pump'?'💧 补水泵':'🧪 施肥泵' }} · 定时清水演示</h2>
+      <p class="hint">未做湿度标定、流量测量；不使用 AI/湿度决定运行，不推算毫升数。</p>
+      <p v-if="!automation.timed_pumps_ready" class="alert">S3 离线或当前固件不支持定时泵，需后续烧录新版S3。</p>
+      <div class="controls"><label>间隔 <input v-model.number="pumpForms[name].interval" type="number" min="60" max="604800" step="60" /> 秒</label>
+        <label>运行 <input v-model.number="pumpForms[name].seconds" type="number" min="0.001" max="30" step="0.1" /> 秒</label>
+        <button :disabled="busy!=='' || !store.backendOnline" @click="saveSchedule(name)">保存参数并暂停</button>
+      </div>
+      <p>模式：{{ pumpEnabled(name)?'自动定时':'暂停 / 手动' }} · 板端：{{ !automation.timed_pumps_ready?'未知':automation.board_modes?.[name]?'自动':'手动' }}</p>
+      <p>已保存：{{ automation.pump_schedules?.[name]?.interval_sec || '—' }} 秒间隔，运行 {{ automation.pump_schedules?.[name]?.duration_ms?automation.pump_schedules[name].duration_ms/1000:'—' }} 秒</p>
+      <p>下次执行：{{ automation.pump_schedules?.[name]?.next_run?new Date(automation.pump_schedules[name].next_run).toLocaleString():'未安排' }}</p>
+      <p>{{ automation.pump_schedules?.[name]?.last_reason }}</p>
+      <p v-if="automation.pump_schedules?.[name]?.last_command_status">最近回执：{{ labels[automation.pump_schedules[name].last_command_status.result] || automation.pump_schedules[name].last_command_status.result }}</p>
+      <div class="controls">
+        <button :disabled="busy!=='' || !store.backendOnline || !automation.timed_pumps_ready || !pumpConfigured(name)" @click="changeMode(name,true)">恢复自动（重新计时）</button>
+        <button :disabled="busy!=='' || !store.backendOnline" @click="changeMode(name,false)">暂停自动</button>
+      </div>
+      <p class="hint">补水与施肥互斥；同时到期轮换优先，离线或忙时跳过，不补发。间隔60秒～7天，单次最长30秒，仅演示参数。</p>
+    </div>
   </div>
   <p class="page-desc">当前设备：{{ store.health?.device_id || 'edge01' }} · {{ store.deviceOnline?'在线':'离线' }}</p>
   <p v-if="store.deviceOnline && !store.status?.control_ready" class="alert">当前板上固件尚未启用网页控制，请先烧录新版 S3 固件。</p>

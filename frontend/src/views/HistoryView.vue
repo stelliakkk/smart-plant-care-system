@@ -3,10 +3,10 @@
 /**
  * 历史数据页
  * ---------------------------------------------------------------------
- * 目前先用表格把数据列出来(能验证接口就够)。
- * 阶段 3 再换成 ECharts 折线图 —— 画图表的活留给专门做图表的那一步。
+ * 按时间展示读数与逐条数据来源；当前采用表格，尚无历史曲线。
  */
 import { onMounted, ref } from 'vue'
+import ReadingSourceBadge from '@/components/ReadingSourceBadge.vue'
 
 import { fetchHistory } from '@/api/telemetry'
 import { useDeviceStore } from '@/store/device'
@@ -43,12 +43,11 @@ function num(v, digits = 1) {
 <template>
   <h1 class="page-title">历史数据</h1>
   <p class="page-desc">
-    共显示最近 {{ rows.length }} 条记录 · 数据存储在
-    <span class="mono">backend/data/plant.db</span>
+    共显示最近 {{ rows.length }} 条记录 · 每条记录单独标记来源
   </p>
 
   <div class="card">
-    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 14px">
+    <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 14px">
       <label class="hint" style="display: flex; align-items: center; gap: 6px">
         取最近
         <input v-model.number="limit" type="number" min="1" max="2000" step="50" />
@@ -57,7 +56,7 @@ function num(v, digits = 1) {
       <button :disabled="loading || !store.backendOnline" @click="load">
         {{ loading ? '加载中...' : '刷新' }}
       </button>
-      <span class="hint">时间列显示的是采集时间</span>
+      <span class="hint">时间为上报时间；未提供时使用后端接收时间</span>
     </div>
 
     <div v-if="!rows.length" class="placeholder">
@@ -68,14 +67,15 @@ function num(v, digits = 1) {
       </span>
     </div>
 
-    <table v-else>
+    <div v-else class="table-scroll"><table>
       <thead>
         <tr>
           <th>#</th>
-          <th>采集时间</th>
-          <th>土壤湿度 %</th>
-          <th>盐分 mS/cm</th>
-          <th>温度 °C</th>
+          <th>记录时间</th>
+          <th>来源</th>
+          <th>相对湿度 %</th>
+          <th>EC mS/cm</th>
+          <th>探头温度 °C</th>
           <th>光照 lux</th>
         </tr>
       </thead>
@@ -83,21 +83,21 @@ function num(v, digits = 1) {
         <tr v-for="r in rows" :key="r.id">
           <td class="hint">{{ r.id }}</td>
           <td>{{ fmt(r.ts) }}</td>
+          <td><ReadingSourceBadge :source="r.data_source" /></td>
           <td>{{ num(r.soil_moisture) }}</td>
           <td>{{ num(r.soil_ec, 2) }}</td>
           <td>{{ num(r.temperature) }}</td>
           <td>{{ num(r.light_lux, 0) }}</td>
         </tr>
       </tbody>
-    </table>
+    </table></div>
   </div>
 
   <div class="card">
-    <h2 class="card-title">📈 下一步</h2>
+    <h2 class="card-title">读数说明</h2>
     <p class="hint">
-      阶段 3 会把这张表换成曲线图。为此后端已经准备好接口：
-      <span class="mono">GET /api/telemetry/history?limit=200</span>
-      （按时间正序返回，正好可以直接喂给 ECharts）。
+      “模拟”表示调试生成的数据；“来源未记录”表示旧记录没有保存来源。
+      相对湿度不是绝对含水率；设备当前只上传湿度和光照，EC 与温度留空。
     </p>
   </div>
 </template>

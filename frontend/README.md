@@ -1,104 +1,38 @@
 # 前端（Vue 3 + Vite）
 
-基于大模型的植物养护系统的**用户界面**：实时看数据、手动控制执行器、查看 AI 诊断。
+## 运行
 
-## 环境要求
-
-**必须用 Node 20 以上**（推荐 22）。你机器上 PATH 里的 `node` 是 v18.7.0，太老，
-Vite 6 跑不起来。机器里已经有一个现成的 Node 22：
-
-```
-D:\比赛\物联网设计\.tools\node-v22.23.1-win-x64
-```
-
-### 方案 A：临时用（当前这个终端窗口有效）
+使用Node 20+（推荐22）。从项目根目录运行`start_dev.bat`可启动完整开发环境；单独启动：
 
 ```powershell
-$env:Path = "D:\比赛\物联网设计\.tools\node-v22.23.1-win-x64;" + $env:Path
-node --version    # 应该显示 v22.23.1
-```
-
-### 方案 B：永久生效（推荐，一次搞定）
-
-把 `D:\比赛\物联网设计\.tools\node-v22.23.1-win-x64` 加到系统的
-"Path" 环境变量里，并且**排在旧 Node 前面**。改完重开终端，`node --version` 就是 v22 了。
-
-## 快速开始
-
-```powershell
-cd "D:\Lab\Embedded Curriculum Design\pro\frontend"
-
-# 1. 切到 Node 22（方案 A）
-$env:Path = "D:\比赛\物联网设计\.tools\node-v22.23.1-win-x64;" + $env:Path
-
-# 2. 装依赖（用国内镜像快很多）
-npm install --registry=https://registry.npmmirror.com
-
-# 3. 启动
+# frontend目录
+npm install
 npm run dev
+# 生产构建检查
+npm run build
 ```
 
-然后打开 <http://localhost:5173>。
+页面：[http://localhost:5173](http://localhost:5173)。开发服务器代理`/api`、`/images`、`/ws`到后端8000端口；后端不可用时页面提示连接错误。
 
-⚠️ 前端依赖后端，请先把后端跑起来（`backend` 目录下 `uvicorn app.main:app --reload`），
-否则页面顶部会显示一条黄色的"连接不上后端服务"提示。
+## 当前页面
 
-## 目录结构
+| 页面 | 功能 |
+|---|---|
+| 实时总览 | 相对湿度、EC、探头温度、光照、来源角标、链路状态和模拟上报 |
+| 历史数据 | 最近记录表、逐条来源，当前没有曲线 |
+| 手动与自动控制 | 四路动作与回执、模式同步、两路定时参数、下次执行、冷却与判断记录 |
+| 植物照片与AI建议 | 高清照片、异步拍照分析、结构化结果、7天历史与关联照片 |
 
-```
-frontend/
-├── index.html           页面外壳（Vue 是挂到 #app 上的）
-├── vite.config.js       构建配置 + 开发代理（关键文件，见下文）
-├── .env.development     环境变量（一般不用改）
-└── src/
-    ├── main.js          入口：装 Pinia、装 Router、挂载
-    ├── App.vue          顶栏 + 三个状态灯 + 页面容器
-    ├── router/          路由表（4 个页面）
-    ├── api/             接口调用层
-    │   ├── http.js      ★ axios 统一封装，改地址/加 token 只改这里
-    │   ├── telemetry.js 传感器数据
-    │   ├── device.js    设备状态与指令
-    │   └── vision.js    AI 诊断
-    ├── store/device.js  全局状态（Pinia）：链路状态、最新读数、WebSocket
-    ├── utils/ws.js      WebSocket 封装（带自动重连）
-    ├── components/      可复用小组件
-    ├── views/           4 个页面
-    └── assets/main.css  全局样式（配色用 CSS 变量，改主题只改 :root）
-```
+`App.vue`负责全局轮询，`store/device.js`保存共享状态，`api/`封装请求。WebSocket客户端已连接，但后端尚未广播业务消息，数据当前依靠轮询更新。
 
-## 四个页面
+## 来源角标
 
-| 路由 | 页面 | 作用 |
-|---|---|---|
-| `/dashboard` | 实时总览 | 5 个环境指标 + 链路状态 + 调试按钮 |
-| `/control` | 手动控制 | 开关补水泵 / 施肥泵 / 补光灯 / 喷雾 |
-| `/vision` | AI 诊断 | 抓拍图片与模型诊断结果 |
-| `/history` | 历史数据 | 表格形式的历史读数 |
+`ReadingSourceBadge.vue`统一显示“设备”“模拟”“来源未记录”。总览数值旁为小角标，历史表逐行显示来源；字段取自记录的`data_source`，不是浏览器里的临时开关。真实设备新读数到达后，角标随记录一起切换。
 
-## 关于开发代理（`vite.config.js`）
+模拟上报由后端强制标记；旧数据库迁移前的记录无法追溯来源，显示“来源未记录”。空值显示`--`，不会伪装成0。设备当前只上传相对湿度与光照，温度/EC为空；模拟值不代表传感器实测。
 
-这是前端开发最省事的一招：
+## 控制与实测范围
 
-```
-浏览器 ──▶ 5173 (Vite)  ──/api、/ws、/images──▶  8000 (后端)
-```
+同时到期的定时泵轮换优先；页面说明与[自动控制规则](../docs/automation_control.md)一致。用户确认补光灯已实测、三路泵已接线但未实测运行，驱动回执不等于流量测量。
 
-好处是**浏览器眼里只有一个源**，于是：
-
-- 前端代码里直接写 `http.get('/api/health')`，不用管后端在哪
-- 不用配 CORS，也不会遇到跨域报错
-- 换后端地址只改 `vite.config.js` 一处
-
-将来手机连同一个 WiFi 访问时，把地址换成电脑的局域网 IP 即可
-（`vite.config.js` 里已经写了 `host: true`）。
-
-## 当前进度
-
-页面骨架、接口封装、状态管理、WebSocket 客户端都已完成，可以正常跑通
-"后端有数据 → 页面显示出来"。
-
-还差（代码里都标了 TODO 或提示文字）：
-
-- 历史曲线图（阶段 3 接 ECharts）
-- WebSocket 实时推送（后端 `app/main.py` 里还没实现推送，前端先用 10 秒轮询兜底）
-- AI 诊断结果展示的真实数据（阶段 5）
+本次角标与轮换更新需要重启后端并刷新网页，无需为此重烧固件。

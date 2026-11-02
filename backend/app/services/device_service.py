@@ -40,6 +40,7 @@ def mark_seen(
     actuators: dict | None = None,
     automation: dict | None = None,
     automation_ready: bool = False,
+    timed_pumps_ready: bool | None = None,
     light_lux: float | None = None,
     light_fault: str = "",
 ) -> DeviceStatus:
@@ -56,6 +57,7 @@ def mark_seen(
     if boot_id is not None:
         if status.boot_id != boot_id:
             status.automation_ready=False
+            status.timed_pumps_ready=False
             status.automation={}
             status.actuators={}
         status.boot_id = boot_id if isinstance(boot_id, str) else ""
@@ -65,10 +67,11 @@ def mark_seen(
         status.actuators = {key: value for key, value in actuators.items()
                             if key in {"pump", "fertilizer", "spray", "grow_light"} and isinstance(value, bool)}
     if automation is not None:
-        status.automation = {k:v for k,v in automation.items() if k in {"spray","grow_light"} and isinstance(v,bool)}
+        status.automation = {k:v for k,v in automation.items() if k in {"spray","grow_light","pump","fertilizer"} and isinstance(v,bool)}
         status.automation_ready = automation_ready is True
         status.light_lux = light_lux
         status.light_fault = light_fault
+    if timed_pumps_ready is not None: status.timed_pumps_ready = timed_pumps_ready is True
     status.fault = fault
     _status_cache[device_id] = status
     return status

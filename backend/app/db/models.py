@@ -2,7 +2,7 @@
 """
 数据库表模型
 ---------------------------------------------------------------------
-四张表对应系统的四条数据线:
+核心数据线（另有相机元数据、指令生命周期和自动化状态表）:
     Plant           植物档案        —— 种的是什么
     SensorReading   传感器读数      —— 环境怎么样
     ControlLog      执行器动作日志  —— 我们做了什么(谁下令的、结果如何)
@@ -44,6 +44,7 @@ class SensorReading(Base):
     device_id: Mapped[str] = mapped_column(String(32), index=True, default="edge01")
     ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
 
+    data_source: Mapped[str] = mapped_column(String(16), default="device", server_default="unknown")
     soil_moisture: Mapped[float | None] = mapped_column(Float, nullable=True)  # 土壤湿度 %
     soil_ec: Mapped[float | None] = mapped_column(Float, nullable=True)        # 土壤盐分 mS/cm
     temperature: Mapped[float | None] = mapped_column(Float, nullable=True)    # 环境温度 °C
@@ -75,7 +76,7 @@ class ControlLog(Base):
 
 
 class VisionRecord(Base):
-    """一次图像分析记录。need_spray 为 AI 闭环控制提供依据。"""
+    """照片与分析记录；旧need_spray字段保留，当前决策读取结构化结果。"""
 
     __tablename__ = "vision_record"
 
@@ -91,7 +92,7 @@ class VisionRecord(Base):
 
 
 class CameraFrame(Base):
-    """一次 ESP32-CAM 抓拍的元数据；当前阶段绝不保存 JPEG 内容。"""
+    """旧抓拍元数据表；当前照片及结果由VisionRecord与图片文件保存。"""
 
     __tablename__ = "camera_frame"
 

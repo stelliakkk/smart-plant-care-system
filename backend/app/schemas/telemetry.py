@@ -6,6 +6,7 @@ TelemetryPayload 同时也是"边缘端上报格式"的权威定义:
 ESP32 通过 MQTT 发上来的 JSON 必须能被它解析, 详见 docs/mqtt_topics.md
 """
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,6 +16,9 @@ class TelemetryPayload(BaseModel):
 
     device_id: str = Field(default="edge01", description="设备编号")
     ts: datetime | None = Field(default=None, description="采集时间, 缺省则用服务器时间")
+    data_source: Literal["device", "simulated", "unknown"] = Field(
+        default="device", description="数据来源：设备上报、模拟或历史来源未记录"
+    )
 
     soil_moisture: float | None = Field(default=None, description="土壤湿度 %")
     soil_ec: float | None = Field(default=None, description="土壤盐分 mS/cm")

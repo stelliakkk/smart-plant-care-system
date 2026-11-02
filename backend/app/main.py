@@ -61,27 +61,30 @@ def _on_status(topic: str, data: dict) -> None:
     try:
         from app.services import camera_service
 
-        previous_boot = device_service.get_status(settings.device_id).boot_id
-        device_service.mark_seen(
-            device_id=data.get("device_id", settings.device_id),
-            rssi=data.get("rssi"),
-            uptime_s=data.get("uptime_s"),
-            fault=data.get("fault", ""),
-            boot_id=data.get("boot_id", ""),
-            control_ready=data.get("control_ready", False),
-            actuators=data.get("actuators"),
-            automation=data.get("automation"),
-            automation_ready=data.get("automation_ready", False),
-            light_lux=data.get("light_lux"),
-            light_fault=data.get("light_fault", ""),
-        )
-        camera_service.update_from_status(data)
-        if data.get("device_id") == settings.device_id:
-            from app.services import automation_service
-            if previous_boot != data.get("boot_id", ""):
-                automation_service.reset_sequence()
-            automation_service.observe_light(data)
-            automation_service.reconcile()
+        from app.services import command_service
+        with command_service._lock:
+            previous_boot = device_service.get_status(settings.device_id).boot_id
+            device_service.mark_seen(
+                device_id=data.get("device_id", settings.device_id),
+                rssi=data.get("rssi"),
+                uptime_s=data.get("uptime_s"),
+                fault=data.get("fault", ""),
+                boot_id=data.get("boot_id", ""),
+                control_ready=data.get("control_ready", False),
+                actuators=data.get("actuators"),
+                automation=data.get("automation"),
+                automation_ready=data.get("automation_ready", False),
+                timed_pumps_ready=data.get("timed_pumps_ready", False),
+                light_lux=data.get("light_lux"),
+                light_fault=data.get("light_fault", ""),
+            )
+            camera_service.update_from_status(data)
+            if data.get("device_id") == settings.device_id:
+                from app.services import automation_service
+                if previous_boot != data.get("boot_id", ""):
+                    automation_service.reset_sequence()
+                automation_service.observe_light(data)
+                automation_service.reconcile()
     except Exception:
         logger.exception("处理心跳失败")
 

@@ -3,7 +3,7 @@
 虚拟边缘端设备(没有硬件时用它顶替 ESP32)
 =====================================================================
 作用: 冒充 ESP32 往 MQTT 上发传感器数据, 让后端和前端可以先行开发,
-      不用干等板子接好。它发的报文格式与真实固件完全一致。
+      不用干等板子接好。每条遥测携带 data_source=simulated。
 
 用法(在 backend/ 目录下):
     .\\.venv\\Scripts\\python.exe scripts\\sim_device.py
@@ -12,8 +12,8 @@
 它模拟的行为:
     - 每 interval 秒发一次 plant/{device_id}/telemetry
     - 每 5 次上报附带一次 plant/{device_id}/status 心跳
-    - 订阅 plant/{device_id}/cmd, 收到指令后等 duration_ms 再回 cmd_ack
-    - 收到 pump 指令后会真的把"土壤湿度"拉上去, 让闭环看起来是通的
+    - 仅模拟遥测与在线心跳；不模拟新版指令回执、自动模式或互锁
+    - 控制规则模拟请运行 tests/test_timed_pumps.py 等隔离测试
 
 按 Ctrl+C 退出。
 =====================================================================
@@ -24,7 +24,6 @@ import math
 import random
 import signal
 import sys
-import threading
 import time
 from datetime import datetime
 
@@ -38,10 +37,10 @@ except ImportError:
 class FakeSensors:
     """
     让假数据看起来像真的:
-        土壤湿度 —— 随蒸发缓慢下降, 收到补水指令后回升
+        土壤湿度 —— 随模拟蒸发缓慢下降
         光照     —— 正弦模拟昼夜变化 + 随机噪声
         温度     —— 围绕 24°C 缓慢波动
-        盐分     —— 施肥时上升, 其余时间缓慢下降
+        盐分     —— 固定演示值，不代表真实传感器
     """
 
     def __init__(self) -> None:
@@ -63,22 +62,13 @@ class FakeSensors:
         self.temperature = max(15.0, min(35.0, self.temperature))
 
         return {
+            "data_source": "simulated",
             "ts": datetime.now().isoformat(timespec="seconds"),
             "soil_moisture": round(self.soil_moisture, 1),
             "soil_ec": round(self.soil_ec, 2),
             "temperature": round(self.temperature, 1),
             "light_lux": round(lux, 0),
         }
-
-    def apply_actuator(self, actuator: str) -> None:
-        """执行器动作对"环境"产生的影响, 让闭环演示看起来是通的。"""
-        if actuator == "pump":
-            self.soil_moisture = min(75.0, self.soil_moisture + random.uniform(6, 12))
-        elif actuator == "fertilizer":
-            self.soil_ec = min(4.0, self.soil_ec + random.uniform(0.2, 0.5))
-        elif actuator == "grow_light":
-            print("[模拟] 补光灯开启")
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="虚拟 ESP32 边缘端设备")
@@ -94,8 +84,6 @@ def main() -> None:
 
     telemetry_topic = f"plant/{args.device_id}/telemetry"
     status_topic = f"plant/{args.device_id}/status"
-    cmd_topic = f"plant/{args.device_id}/cmd"
-    ack_topic = f"plant/{args.device_id}/cmd_ack"
 
     # --------------------------- MQTT 回调 ---------------------------
     def on_connect(client, userdata, flags, reason_code, properties=None):
@@ -103,44 +91,10 @@ def main() -> None:
             print(f"[MQTT] 连接被拒绝: {reason_code}")
             return
         print(f"[MQTT] 已连接 {args.host}:{args.port}")
-        client.subscribe(cmd_topic, qos=0)
-        print(f"[MQTT] 已订阅指令主题 {cmd_topic}")
 
     def on_disconnect(client, userdata, flags, reason_code, properties=None):
         if getattr(reason_code, "is_failure", False):
             print(f"[MQTT] 连接断开({reason_code}), 正在自动重连...")
-
-    def on_message(client, userdata, msg):
-        """收到后端下发的执行器指令。"""
-        try:
-            cmd = json.loads(msg.payload.decode("utf-8", "replace"))
-        except json.JSONDecodeError:
-            print("[CMD] 收到非 JSON 报文, 已忽略")
-            return
-
-        actuator = cmd.get("actuator", "?")
-        action = cmd.get("action", "?")
-        duration_ms = int(cmd.get("duration_ms", 0) or 0)
-        source = cmd.get("source", "manual")
-        print(f"[CMD] {actuator} {action} {duration_ms}ms (来源: {source})")
-
-        def finish():
-            if action == "on":
-                sensors.apply_actuator(actuator)
-            ack = {
-                "actuator": actuator,
-                "result": "done",
-                "reason": f"模拟执行 {duration_ms}ms",
-                "ts": datetime.now().isoformat(timespec="seconds"),
-            }
-            client.publish(ack_topic, json.dumps(ack, ensure_ascii=False))
-            print(f"[ACK] 已回执: {ack['actuator']} -> {ack['result']}")
-
-        # 用定时器模拟"执行耗时", 避免阻塞 paho 的网络线程
-        if duration_ms > 0:
-            threading.Timer(duration_ms / 1000.0, finish).start()
-        else:
-            finish()
 
     # --------------------------- 启动 ---------------------------
     client = mqtt.Client(
@@ -148,7 +102,6 @@ def main() -> None:
     )
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
-    client.on_message = on_message
     client.reconnect_delay_set(min_delay=1, max_delay=15)
 
     try:

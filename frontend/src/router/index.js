@@ -20,13 +20,13 @@ const routes = [
     path: '/control',
     name: 'control',
     component: () => import('@/views/ControlView.vue'),
-    meta: { title: '手动控制', icon: '🎛️' },
+    meta: { title: '手动与自动控制', icon: '🎛️' },
   },
   {
     path: '/vision',
     name: 'vision',
     component: () => import('@/views/VisionView.vue'),
-    meta: { title: 'AI 诊断', icon: '🔍' },
+    meta: { title: '照片与 AI 建议', icon: '🔍' },
   },
   {
     path: '/history',

@@ -1,20 +1,20 @@
 /*
  * =====================================================================
- *  ESP32-S3-WROOM-1 入门示例 —— 应用编排层
+ *  ESP32-S3-WROOM-1 植物采集与执行节点 —— 应用编排层
  * =====================================================================
  *  目标开发板 : ESP32-S3-DevKitC-1 v1.1 (模组 ESP32-S3-WROOM-1)
- *  ESP-IDF    : v6.1
+ *  ESP-IDF    : >=6.0（当前构建记录为6.0.1）
  *
  *  功能:
  *    1) 开机打印芯片信息 (型号/核心数/硅片版本/特性/MAC/Flash/复位原因)
- *    2) 驱动板载可寻址 RGB 灯 (WS2812), 循环显示红/绿/蓝/青/品红/黄/白/灭
- *    3) 每秒读一次光照(BH1750)与土壤湿度(电容式探头)
+ *    2) 默认锁存关闭板载RGB；可选宏启用循环彩灯演示
+ *    3) 读取光照、土壤湿度、盐分原始值与DS18B20温度，采样后延时1000ms
  *    4) ★ 每 3 秒通过 MQTT 把读数上报给后端 -> 入库 -> 前端页面刷新
  *
  *  ---------------------------------------------------------------
- *  当前进度: 阶段 2 —— "传感器 → MQTT → 后端 → 页面" 全链路打通
- *    阶段 1 已单独验证过传感器(串口读数正常), 现在才把网络接上来。
- *    分两步走的好处: 一旦出问题, 能立刻判断是"传感器的事"还是"网络的事"。
+ *  当前控制: 四路PWM默认关闭，plant_control处理指令、限时和互锁。
+ *    自动补光在板端；定时补水/施肥与视觉喷洒判断在后端。
+ *    温度和盐分仅本地采样；上传字段仍为null，详见publish_sample。
  *
  *  数据流:
  *    传感器 → ESP32 采样 → MQTT plant/edge01/telemetry → 后端入库
@@ -33,7 +33,7 @@
  *      一个 RGB_LED_GPIO 宏;
  *    - 将来若要换成另一种灯 (例如 SPI 接口的 APA102), 只重写 rgb_led
  *      组件内部, 本文件和 app_config.h 一行都不用动;
- *    - 依赖是单向的: main -> 组件, 组件之间互不依赖, 不会绕成一团乱麻。
+ *    - main向下依赖组件；组件按CMake声明必要依赖，不反向引用main。
  * =====================================================================
  */
 
@@ -123,7 +123,7 @@ static void run_led_demo(void)
 }
 
 /* 说明: 原来还有一个"灭灯 + 每秒心跳"的模式函数 run_led_off(), 它内部是
- * 死循环。现在传感器采样循环自己会每秒打印一行(带 heap 占用), 心跳功能
+ * 死循环。现在传感器采样循环每轮打印一行(带 heap 占用), 心跳功能
  * 已经被它取代, 所以删掉那个函数 —— 免得留下"定义了却没人调用"的死代码,
  * 编译器也会报 -Wunused-function 警告。 */
 
@@ -146,7 +146,7 @@ typedef struct {
 } sample_result_t;
 
 /**
- * @brief 读一轮两个传感器, 结果填进 out。
+ * @brief 依次读取四类传感器, 结果填进 out。
  *
  * @param light_ready 光照传感器是否可用(读失败不会把它置为不可用, 下轮自动重试)
  * @param soil_ready  土壤传感器是否可用
@@ -259,16 +259,15 @@ static void log_sample(const sample_result_t *r)
 /**
  * @brief 把一轮采样上报给后端。
  *
- * 盐分和温度这两项是留给将来接入的传感器 —— 现在没有数据就传 NAN,
- * 拼成 JSON 就是 null。后端允许任何一项为 null, 所以不会因为
- * "传感器还没买"就报错或丢弃整条数据。
+ * 盐分原始值和温度已在本地读取；当前尚未将这两项接入遥测。
+ * 盐分没有EC标定，温度暂未上传；传NAN会编码为JSON null。
  */
 static void publish_sample(const sample_result_t *r)
 {
     const telemetry_sample_t t = {
         .soil_moisture = r->soil_percent,
-        .soil_ec       = NAN,   /* 盐分传感器: 待接入 */
-        .temperature   = NAN,   /* 温度传感器: 待接入 */
+        .soil_ec       = NAN,   /* 本地仅有raw/mV，尚无EC标定 */
+        .temperature   = NAN,   /* 已本地读取，尚未接入上传 */
         .light_lux     = r->light_lux,
     };
 
@@ -287,15 +286,9 @@ void app_main(void)
     /* 1) 先把芯片家底打印出来, 方便排查问题 */
     board_info_print();
 
-    /* 2) 补水泵硬件验证。
-     *    默认 GPIO9 输出 20kHz、50% PWM 5 秒, 然后自动关闭。
-     *    这样先验证 MOS 驱动和水泵硬件, 后续可复用组件接口接入业务控制。 */
+    /* 2) 初始化补水泵PWM为关闭；开机不运行负载。 */
     ESP_ERROR_CHECK(actuator_pump_init());
-#if APP_ACTUATOR_STARTUP_TEST_ENABLE
-    ESP_ERROR_CHECK(actuator_pump_run_test());
-#endif
-
-    /* 3) 板载 RGB 灯。
+/* 3) 板载 RGB 灯。
      *    彩灯演示模式内部是死循环(不会返回), 所以放在传感器初始化之前:
      *    打开演示时就专心看灯, 关掉时才进入传感器采样。 */
     ESP_ERROR_CHECK(rgb_led_init());
@@ -357,21 +350,11 @@ void app_main(void)
         ESP_LOGW(TAG, "DS18B20 温度传感器不可用: %s", esp_err_to_name(err));
     }
 
-    /* 盐水泵、农药泵和补光灯依次进行启动硬件验证，验证后自动关闭。 */
+    /* 施肥泵、农药泵和补光灯初始化为关闭，不进行上电运行测试。 */
     ESP_ERROR_CHECK(saltwater_pump_init());
-#if APP_ACTUATOR_STARTUP_TEST_ENABLE
-    ESP_ERROR_CHECK(saltwater_pump_run_test());
-#endif
-    ESP_ERROR_CHECK(spray_pump_init());
-#if APP_ACTUATOR_STARTUP_TEST_ENABLE
-    ESP_ERROR_CHECK(spray_pump_run_test());
-#endif
-    ESP_ERROR_CHECK(grow_light_init());
-#if APP_ACTUATOR_STARTUP_TEST_ENABLE
-    ESP_ERROR_CHECK(grow_light_run_test());
-#endif
-
-    if (!light_ready && !soil_ready && !salinity_ready && !temperature_ready) {
+ESP_ERROR_CHECK(spray_pump_init());
+ESP_ERROR_CHECK(grow_light_init());
+if (!light_ready && !soil_ready && !salinity_ready && !temperature_ready) {
         ESP_LOGE(TAG, "所有传感器都没就绪 —— 先查接线(pro/docs/hardware_wiring.md)");
     }
 
@@ -402,7 +385,7 @@ void app_main(void)
 
     /* 6) 采样 + 上报主循环。
      *    两个独立的节奏, 别混成一个:
-     *      采样: 每 APP_SAMPLE_PERIOD_MS 一次(串口每秒一行, 肉眼可见)
+     *      采样: 每轮结束延时APP_SAMPLE_PERIOD_MS，实际周期另含传感器耗时
      *      上报: 每 APP_REPORT_PERIOD_MS 一次(与后端/前端的刷新节奏对齐)
      *    不采用"采一次报一次"是因为那样既刷串口日志, 又白白增加数据库写入。 */
     ESP_LOGI(TAG, "=== 阶段2: 采样 %d ms / 上报 %d ms, device_id=%s ===",

@@ -27,6 +27,7 @@ def save_reading(payload: TelemetryPayload) -> int:
     try:
         row = SensorReading(
             device_id=payload.device_id,
+            data_source=payload.data_source,
             soil_moisture=payload.soil_moisture,
             soil_ec=payload.soil_ec,
             temperature=payload.temperature,
@@ -104,6 +105,6 @@ def check_thresholds(reading: SensorReading) -> list[str]:
     # 示例(待按植物种类调整):
     #   if reading.soil_moisture is not None and reading.soil_moisture < 25:
     #       warnings.append("土壤偏干, 建议补水")
-    #   if reading.light_lux is not None and reading.light_lux < 3000:
+    #   if reading.light_lux is not None and reading.light_lux < 100:
     #       warnings.append("光照不足, 建议补光")
     return warnings

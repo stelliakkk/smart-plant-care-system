@@ -94,6 +94,8 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
 
+    scheduler.add_job(_job_pumps,'interval',seconds=1,id='timed-pumps',replace_existing=True,
+                      max_instances=1,coalesce=True)
     scheduler.start()
     logger.info("定时任务调度器已启动")
 
@@ -103,3 +105,8 @@ def stop_scheduler() -> None:
     if scheduler.running:
         scheduler.shutdown(wait=False)
         logger.info("定时任务调度器已停止")
+
+def _job_pumps():
+    from app.services import automation_service
+    try: automation_service.pump_tick()
+    except Exception: logger.exception('定时泵调度失败；不会补发已消费的执行机会')

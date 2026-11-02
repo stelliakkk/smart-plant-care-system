@@ -1,227 +1,105 @@
 # 基于大模型的智能植物养护系统
 
-一个"能自己照顾植物"的完整系统：**ESP32 采集环境数据并执行动作，后端记录与决策，
-大模型负责"看"植物有没有生病，网页端负责展示与控制。**
+ESP32-S3 采集环境数据并执行泵灯控制，ESP32-CAM 提供植物照片；后端保存数据、处理指令回执和视觉分析，网页显示读数、控制模式与分析结果。
 
-## 三端结构
+## 项目结构
 
-```
-edge/       两个独立 ESP-IDF 工程         —— S3 感知/执行；CAM 视觉节点预留
-   ↕ MQTT
-backend/    FastAPI + SQLite             —— 记录数据、闭环决策、调用 AI
-   ↕ REST / WebSocket
-frontend/   Vue 3 + Vite                 —— 实时监控、手动控制、诊断展示
-```
-
-三者可以**独立开发、独立运行**：没有硬件时用 `backend/scripts/sim_device.py`
-冒充板子（`start_dev.bat -WithSim`）；后端没启动时前端会明确提示，不会白屏。
-
-> ★ **别在接真板子的同时开着 `-WithSim`** —— 模拟设备每 3 秒往同一个
-> `device_id` 灌一组假数据，会和板子的真数据混进同一张表，页面上的数字
-> 就分不清真假了。调硬件时用不带参数的 `start_dev.bat`。
-
-## 快速开始
-
-### ★ 一键启动（日常就用这个）
-
-双击 **`start_dev.bat`**，选择本机网络档案（默认有 `desk` 工位 WiFi 和 `debug` 手机热点）。它自动做四件事：
-
-1. 校验电脑当前 Wi-Fi 与选择一致，生成两块板待编译的网络配置（含当前电脑 MQTT 地址）
-2. 找到 Node 22（PATH 里的 v18 太老，Vite 6 跑不起来）—— **不用再手动改环境变量**
-3. 依次拉起 MQTT broker（`0.0.0.0:1883`）、后端（`8000`）、前端（`5173`），各开一个带标题的窗口
-4. 等前端就绪后**自动打开浏览器**，并把地址清楚地打印出来
-
-```
-  =====================================================
-   启动完成 —— 把下面这个地址粘到浏览器里:
-
-          http://localhost:5173
-
-   手机/平板(需同一个 WiFi): http://192.168.202.59:5173
-   ESP32 要连的 broker     : mqtt://192.168.202.59:1883
-   后端接口文档            : http://127.0.0.1:8000/docs
-  =====================================================
+```text
+edge/esp32s3_plant_edge/   ESP-IDF：传感器、四路PWM、本地补光、泵限时与互锁
+edge/esp32cam_vision_edge/ ESP-IDF：OV2640高清抓拍、HTTP照片、MQTT服务发现
+backend/                  FastAPI + SQLite + MQTT + 后台定时任务
+frontend/                 Vue 3 + Vite：总览、历史、控制、植物照片与AI建议
+docs/                     架构、接口、接线、自动控制与分区说明
+scripts/                  Windows开发环境启停与网络配置
 ```
 
-停止服务：双击 **`stop_dev.bat`**。它是**按端口**找进程的，并且只结束
-python / node / cmd 这类进程 —— 别的软件占了端口只会提示并跳过，不会误杀。
+S3 与后端通过 MQTT 通信，照片通过 HTTP 下载，网页业务状态通过 HTTP 轮询更新。WebSocket 目前提供连接与 ping/pong，不推送业务数据。
 
-可选参数：
+## 当前功能与实测范围（2026-11-02）
 
-| 命令 | 作用 |
+| 项目 | 当前状态 |
 |---|---|
-| `start_dev.bat -WithSim` | 额外起一个**模拟设备**，没有硬件时页面也有数字在跳 |
-| `start_dev.bat -NoBroker` | 不起 MQTT broker（只调前端样式时用，少一个窗口） |
-| `start_dev.bat -NoBrowser` | 不自动打开浏览器 |
-| `start_dev.bat -NetworkProfile <名称>` | 跳过菜单，使用 `scripts/network_profiles.local.json` 中对应的网络档案 |
+| 实物电源与补光灯 | 用户确认12V输入、电源电路正在使用；补光灯已实测 |
+| 三路泵 | 已接线并实现运行逻辑，尚未实测运行；后续先做短时清水测试 |
+| 遥测 | 上传光照、土壤相对湿度；盐分原始值与DS18B20温度只在本地读取，EC与温度上传为空 |
+| 手动控制 | 四路开启/关闭、指令ID与回执、单次泵最长30秒、补水与施肥互斥 |
+| 自动补光 | S3本地：低于100 lux持续10秒开，高于300 lux持续30秒关；断网继续本地判断 |
+| 自动补水/施肥 | 定时清水演示；必填间隔和时长，保存后暂停，主动恢复后开始计时 |
+| 定时泵争用 | 同时到期时优先上次定时提交的另一泵；轮次持久保存，忙/离线时跳过，不补发 |
+| 视觉 | CAM提供1600×1200 JPEG；后端默认每5分钟抓拍分析，照片与结果保留7天 |
+| 自动喷洒 | 连续两次有效定时分析明确虫害且有依据时下发2秒；后端保守冷却48小时 |
+| 数据来源 | 总览数值与历史记录区分“设备”“模拟”“来源未记录” |
 
-新增网络时，编辑本机私有文件 `scripts/network_profiles.local.json`，添加一个条目，例如：
+相对湿度不是绝对含水率，EC不等于肥力；当前补水/施肥不依据AI、湿度或EC决定动作。没有流量、电流和水位反馈，驱动回执表示输出设置结果。板端已有限时、互锁和断网停止；尚未实现喷洒累计上限或板端48小时冷却。
 
-```json
-{
-  "apex": {
-    "ssid": "apex",
-    "password": "填写该 WiFi 密码"
-  }
-}
-```
+## 启动开发环境
 
-保留原有 `desk`、`debug` 条目，并把 `apex` 加在同一个 JSON 对象中（不要再套一层 `{}`）。重新运行 `start_dev.bat` 后，菜单会自动列出它；电脑先连上 `apex` 再选择该档案。该本机文件已加入 `.gitignore`，包含密码，不要提交到版本库。网络档案只生成 ESP32 编译配置；新增档案后还要分别重新编译、烧录需要切换网络的 ESP32。
+日常双击 `start_dev.bat`，选择电脑当前连接的网络档案。脚本生成两块板的待编译网络头文件，启动 MQTT broker（1883）、后端（8000）、前端（5173），并打开网页。
 
-> 已经在跑的服务会被自动识别并跳过，重复双击不会撞出"端口被占用"。
+| 命令 | 用途 |
+|---|---|
+| `start_dev.bat` | 接真实硬件调试 |
+| `start_dev.bat -WithSim` | 同时启动遥测模拟脚本 |
+| `start_dev.bat -NoBroker` | 跳过broker |
+| `start_dev.bat -NoBrowser` | 不自动打开网页 |
+| `start_dev.bat -NetworkProfile <名称>` | 指定网络档案 |
+| `stop_dev.bat` | 按端口检查并停止开发服务 |
 
-每次切换 Wi‑Fi 后，都要重新双击脚本选择对应档案，再分别重新烧录 ESP32-S3 与
-ESP32-CAM。ESP32 仅支持 2.4 GHz；若工位路由器双频同名，电脑可继续在 5 GHz，
-两块板会使用同名的 2.4 GHz。
+网页：[http://localhost:5173](http://localhost:5173)；后端接口：[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)。手机需与电脑处于可互通局域网，使用电脑实际IP和5173端口。
 
-### 手动启动（想单独调试某一端时用）
-
-#### 1. 后端（必须最先启动）
-
-```powershell
-cd "D:\Lab\Embedded Curriculum Design\pro\backend"
-py -3.12 -m venv .venv                       # 首次
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt              # 首次
-copy .env.example .env                       # 首次（然后把 DeepSeek Key 填进去）
-python scripts\init_db.py                    # 首次
-uvicorn app.main:app --reload
-```
-
-接口文档：<http://127.0.0.1:8000/docs>
-
-> ⚠️ **不要用 ESP-IDF 的虚拟环境装后端依赖**，会污染 IDF 导致 `idf.py` 起不来。
-
-#### 2. 前端
+首次安装：
 
 ```powershell
-# PATH 里的 node 是 v18，太老，需要切到已有的 Node 22
-$env:Path = "D:\比赛\物联网设计\.tools\node-v22.23.1-win-x64;" + $env:Path
+# 项目根目录；使用独立后端环境，不要安装到ESP-IDF环境
+py -3.12 -m venv backend/.venv
+backend/.venv/Scripts/python.exe -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+Copy-Item backend/.env.example backend/.env
+Copy-Item scripts/network_profiles.local.example.json scripts/network_profiles.local.json
+# 填写本机网络档案；AI Key仅填写在backend/.env
+cd frontend
+npm install
+```
 
-cd "D:\Lab\Embedded Curriculum Design\pro\frontend"
-npm install --registry=https://registry.npmmirror.com   # 首次
+前端使用Node 20+（推荐22）；启动脚本会查找可用版本。Wi-Fi档案按模板在同一个JSON对象中添加；私有档案、`.env`、生成的网络头文件均不提交版本库。
+
+每次更换网络导致固件Wi-Fi/MQTT配置变化时，重新运行启动脚本，再分别编译、烧录需要更新配置的板子。生成头文件不会改变已经烧录的固件。ESP32使用2.4GHz Wi-Fi。
+
+手动启动后端和前端：
+
+```powershell
+# backend目录
+.venv/Scripts/python.exe scripts/init_db.py
+.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+# frontend目录，另开终端
 npm run dev
 ```
 
-打开 <http://localhost:5173> —— 顶栏三个小圆点（后端 / MQTT / 设备）都变绿就说明通了。
+## 模拟数据与历史兼容
 
-#### 3. 边缘端（有硬件时）
+网页“模拟上报一条数据”和 `backend/scripts/sim_device.py` 都将读数标为 `simulated`。小角标来自每条记录本身；后续设备数据到达后自动显示“设备”。模拟脚本仅提供遥测与在线状态，不模拟新版控制协议；执行器模拟验证由后端隔离测试完成。
 
-> **接线先看 [docs/hardware_wiring.md](docs/hardware_wiring.md)** —— 引脚分配、逐线对应、常见坑、接完怎么自检都在那。
+旧数据库启动时自动增加 `data_source` 列，原记录保留，来源显示“来源未记录”。历史真值与模拟值无法可靠追溯，不自动猜测。旧S3固件无需增加字段，缺省按设备上报处理。
 
-```powershell
-. 'C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1'
-cd "D:\Lab\Embedded Curriculum Design\pro\edge\esp32s3_plant_edge"
-idf.py -p COM3 flash monitor
-```
+实物调试请停止 `-WithSim`：当前仍使用同一设备编号与主题，来源角标能区分读数，但不能消除模拟心跳对设备状态的干扰。
 
-#### 没有硬件？用虚拟设备顶替
+## 软件验证与启用
 
 ```powershell
-cd "D:\Lab\Embedded Curriculum Design\pro\backend"
-.\.venv\Scripts\Activate.ps1
-
-# 本机没装 Mosquitto 时，先用纯 Python 的 broker 顶上
-python scripts\dev_broker.py
-
-# 再开一个终端，冒充 ESP32 持续上报数据
-python scripts\sim_device.py --interval 3
+# backend目录
+.venv/Scripts/python.exe -m pytest tests -q
+# frontend目录
+npm run build
 ```
 
-虚拟设备发的报文格式与真实固件一致，将来换成真板子时后端和前端**一行都不用改**。
-
-## 跑测试（后端）
-
-```powershell
-cd "D:\Lab\Embedded Curriculum Design\pro\backend"
-.\.venv\Scripts\python.exe -m pytest tests -q
-```
-
-> ★ **测试不会碰到真板子的 MQTT 连接。**
-> `backend/tests/conftest.py` 会在导入任何 `app.*` 之前，先把
-> `MQTT_DISABLED=1` 和一个独立的 `MQTT_CLIENT_ID` 塞进环境变量。
->
-> 原因是一个**真实踩过的坑**：MQTT 协议用 `client_id` 判重，同一个 id
-> 再次连上来时 broker 会把**旧连接踢掉**。早先测试直接在进程内起
-> `TestClient`，它会触发 lifespan → 用和后端**完全一样**的
-> `client_id=plant-care-backend` 去连 broker → **正在运行的后端被静默顶下线**。
-> 更隐蔽的是：纯 Python 的 amqtt broker 踢人时**不发 DISCONNECT 报文**，
-> 于是 paho 的 `connected` 标志一直是 `True`，永不触发自动重连 ——
-> 现象就是"pytest 跑完，页面上的设备永远离线了，重启后端才好"。
->
-> 现在测试进程根本不连 broker（`MQTT_DISABLED=1` 时 `start()` 直接返回），
-> 从物理上杜绝了这件事。`conftest.py` 里还有一个 autouse 的会话级夹具，
-> 一旦隔离失效会立刻断言失败，防止将来有人不小心改回去。
+测试使用临时SQLite、模拟MQTT/HTTP和模拟时钟，不连接正式broker，不驱动实物或调用付费AI。本次调度轮换和来源角标只更新后端/前端，无需为此烧录固件。重启后端、刷新网页后生效；定时泵仍需板端报告 `timed_pumps_ready=true`。
 
 ## 文档
 
-| 文档 | 内容 |
-|---|---|
-| [docs/architecture.md](docs/architecture.md) | 整体架构、数据流、职责划分、**安全设计原则** |
-| [docs/hardware_wiring.md](docs/hardware_wiring.md) | ★ **接线表**：引脚分配、逐线对应、常见坑、接完怎么自检 |
-| [docs/api.md](docs/api.md) | 全部 HTTP 接口与 WebSocket 协议 |
-| [docs/mqtt_topics.md](docs/mqtt_topics.md) | MQTT 主题命名与报文格式（两端通信合同） |
-| [backend/README.md](backend/README.md) | 后端目录结构、调试技巧 |
-| [frontend/README.md](frontend/README.md) | 前端环境要求、页面说明、开发代理 |
-| [edge/esp32s3_plant_edge/README.md](edge/esp32s3_plant_edge/README.md) | ESP32-S3 硬件信息、烧录步骤、实测记录 |
-| [edge/esp32cam_vision_edge/README.md](edge/esp32cam_vision_edge/README.md) | ESP32-CAM 实时视觉节点、供电与烧录说明 |
+入口：[docs/README.md](docs/README.md)。
 
-## ★ 一条最重要的设计纪律
+- [系统架构](docs/architecture.md)、[接线与实测边界](docs/hardware_wiring.md)
+- [手动控制](docs/manual_control.md)、[四路自动控制](docs/automation_control.md)
+- [HTTP接口](docs/api.md)、[MQTT契约](docs/mqtt_topics.md)
+- [照片与AI分析](docs/camera_vision_demo.md)、[S3分区与升级](docs/s3_partitions.md)
 
-**执行器的安全策略必须实现在边缘端本地，不能依赖后端。**
-
-后端下发的指令只是"意图"。断网时后端就失联了，如果"水泵最多抽 10 秒"
-这条规则写在后端，一旦网络断了水泵可能一直抽下去 —— 把植物淹死，甚至烧坏水泵。
-
-所以：板子自己管水泵最长运行时间、喷雾每日次数上限、执行器互锁、看门狗；
-后端只负责决策、记录、以及在页面上诚实地标注"已下发 ≠ 已执行"。
-
-详见 [docs/architecture.md](docs/architecture.md) 第 4 节。
-
-## 硬件清单
-
-| 部件 | 型号 / 备注 |
-|---|---|
-| 主控 | ESP32-S3-DevKitC-1 v1.1（模组 ESP32-S3-WROOM-1-N8R8） |
-| 板载 RGB | WS2812，GPIO38 |
-| 串口 | CP2102N，枚举为 COM3（可能因插拔变化） |
-| 光照传感器 | BH1750 / GY-302，I2C 地址 `0x23`，SCL=**GPIO5**、SDA=**GPIO6** |
-| 土壤湿度 | 电容式（teljesky v2.0 类），AOUT→**GPIO4**（ADC1_CH3） |
-| 执行器 | 补水泵 / 施肥泵 / 补光灯 / 喷雾（待接入） |
-| 摄像头 | AI Thinker 风格 ESP32-CAM（OV2640；独立 `cam01` 视觉节点，阶段 5 接入） |
-
-## 当前进度
-
-已完成 **阶段 0（三端骨架）** 和 **阶段 1（真实传感器上线，全链路打通）**。
-
-### 阶段 1 实测记录的链路（2026-09-13，真板子跑通）
-
-```
-BH1750 光照 + 电容式土壤探头
-  → ESP32-S3 每秒采样
-  → MQTT plant/edge01/telemetry（每 3 秒，QoS 0）
-  → 后端入库 SQLite
-  → 前端每 3 秒轮询 /api/telemetry/latest → 页面数字跟着动
-```
-
-实机证据：
-
-| 检查项 | 结果 |
-|---|---|
-| BH1750 探活 | ✅ `LIGHT: BH1750 found at 0x23` |
-| 土壤 ADC | ✅ `SOIL: 土壤探头: GPIO4 = ADC1 通道 3`，曲线拟合校准已启用 |
-| WiFi | ✅ 曾在 Debug 热点实测连通；热点 IP 变化或切换网络时，重新运行 `start_dev.bat` 选择档案并重烧两块板即可 |
-| MQTT | ✅ `MQTT: 已连上 broker, device_id=edge01`，RSSI −27 dBm |
-| 串口逐秒读数 | ✅ `light=  79.2 lux \| soil=raw=2559 2188 mV   2.0 %`（标定后；标定前同一读数显示 31.7%） |
-| 数据库真实记录 | ✅ `(41, 'edge01', 31.8, None, None, 79.2)` |
-| `/api/device/status` | ✅ `online:true, rssi:-27` |
-| 土壤标定复标 | ✅ 端点由兜底 2600/1300 改为实测 **2200/1100** 后，同一支悬空探头 **31.7% → 2.0%**（步骤见 [docs/hardware_wiring.md](docs/hardware_wiring.md) 第 6.4 节） |
-| 空闲堆 | ✅ 265 KB，长期稳定不降 |
-
-> 盐分和温度**当前入库为 `NULL`**（对应的传感器还没接）—— 后端允许任一字段为空，
-> 这是刻意的设计：先把链路打通，传感器到货后把 `NAN` 换成真实读数即可。
-
-后续阶段（每处都在代码里留了 `TODO(阶段 X)`）：
-WebSocket 推送 → 阈值闭环控制 → 前端图表 → 执行器 + 指令回执 → 摄像头 + AI 诊断。
-
-完整路线图见 [docs/architecture.md](docs/architecture.md) 第 7 节。
+尚未实现：业务WebSocket推送、历史曲线、标定后的湿度闭环补水/EC施肥、OTA。传感器开机识别失败的自动重试、温度上传和板端累计喷洒限制仍需后续处理。

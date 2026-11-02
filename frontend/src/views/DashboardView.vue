@@ -45,31 +45,34 @@ async function mockReport() {
 <template>
   <h1 class="page-title">实时总览</h1>
   <p class="page-desc">
-    数据来自边缘端（ESP32）经 MQTT 上报 · 最后更新：{{ updatedAt }}
+    最新一组传感器读数 · 最后更新：{{ updatedAt }}
   </p>
 
   <div class="grid grid-cards" style="margin-bottom: 16px">
     <SensorCard
       icon="💧"
-      label="土壤湿度"
+      label="土壤相对湿度"
       :value="d.soil_moisture"
       unit="%"
-      hint="低于 25% 应补水"
+      :data-source="d.data_source"
+      hint="探头干湿参考值映射；补水当前按定时运行"
     />
     <SensorCard
       icon="🧪"
-      label="土壤盐分"
+      label="土壤电导率（EC）"
       :value="d.soil_ec"
       unit="mS/cm"
       :digits="2"
-      hint="反映肥力高低"
+      :data-source="d.data_source"
+      hint="设备尚未上传标定后的 EC；模拟值仅供演示"
     />
     <SensorCard
       icon="🌡️"
-      label="环境温度"
+      label="探头温度"
       :value="d.temperature"
       unit="°C"
-      hint="过高需通风遮阳"
+      :data-source="d.data_source"
+      hint="DS18B20 当前仅本地读取，设备上传值为空"
     />
     <SensorCard
       icon="☀️"
@@ -77,7 +80,8 @@ async function mockReport() {
       :value="d.light_lux"
       unit="lux"
       :digits="0"
-      hint="低于 3000 lux 需补光"
+      :data-source="d.data_source"
+      hint="低于 100 lux 持续 10 秒补光"
     />
   </div>
 
@@ -114,7 +118,7 @@ async function mockReport() {
             <td>实时推送</td>
             <td>
               <i class="dot" :class="{ on: store.wsConnected }"></i>
-              {{ store.wsConnected ? 'WebSocket 已连接' : '未连接（暂用轮询兜底）' }}
+              {{ store.wsConnected ? '连接正常，数据当前每 3 秒轮询更新' : '连接未建立，数据当前每 3 秒轮询更新' }}
             </td>
           </tr>
         </tbody>
@@ -124,15 +128,15 @@ async function mockReport() {
     <div class="card">
       <h2 class="card-title">🛠️ 调试工具</h2>
       <p class="hint" style="margin-bottom: 12px">
-        没有硬件时，点下面的按钮会往后端塞一条随机数据，
-        用来验证「前端 → 后端 → 数据库 → 前端」这条链路。
+        生成一组随机演示数据，数值旁会显示“模拟”角标。
+        历史记录会保留来源；旧记录无法追溯时显示“来源未记录”。
       </p>
       <button class="primary" :disabled="busy || !store.backendOnline" @click="mockReport">
         {{ busy ? '写入中...' : '模拟上报一条数据' }}
       </button>
 
       <p class="hint" style="margin-top: 14px">
-        要模拟真实设备持续上报，请在 backend 目录运行：<br />
+        实物调试时请先停止模拟上报。持续模拟可在 backend 目录运行：<br />
         <span class="mono">python scripts\sim_device.py --interval 3</span>
       </p>
     </div>

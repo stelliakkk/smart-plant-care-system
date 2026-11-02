@@ -22,7 +22,8 @@ static QueueHandle_t queue;
 static plant_control_ack_fn publish_ack;
 static char boot_id[9];
 static atomic_bool connected, stop_requested;
-static bool outputs[4], pending_stop[4];
+static bool outputs[4], pending_stop[4], auto_active[4];
+static const char *mode_keys[]={"pump","fertilizer","spray","light"};
 static int64_t stop_at[4];
 static char active_ids[4][33];
 static receipt_t receipts[64];
@@ -35,7 +36,7 @@ static esp_err_t save_mode(int i, bool enabled) {
     nvs_handle_t handle;
     esp_err_t err=nvs_open("automation",NVS_READWRITE,&handle);
     if(err!=ESP_OK) return err;
-    err=nvs_set_u8(handle,i==3?"light":"spray",enabled);
+    err=nvs_set_u8(handle,mode_keys[i],enabled);
     if(err==ESP_OK) err=nvs_commit(handle);
     nvs_close(handle);
     return err;
@@ -85,6 +86,7 @@ static bool stop(int index,const char *reason) {
     }
     portENTER_CRITICAL(&state_mux); outputs[index]=false; portEXIT_CRITICAL(&state_mux);
     pending_stop[index]=false;
+    auto_active[index]=false;
     stop_at[index]=0;
     if(active_ids[index][0]) acknowledge(active_ids[index],index,"done",reason);
     active_ids[index][0]=0;
@@ -96,30 +98,35 @@ static void apply(const command_t *cmd) {
     int i=cmd->actuator;
     receipt_t *slot=NULL;
     for(size_t n=0;n<64;n++) if(!receipts[n].id[0] || (receipts[n].expires<now_ms() && strcmp(receipts[n].result,"running"))) {slot=&receipts[n];break;}
-    if(!slot && cmd->on) {acknowledge(cmd->id,i,"rejected","dedupe_capacity");return;}
+    if(!slot && (cmd->on || cmd->mode==1)) {acknowledge(cmd->id,i,"rejected","dedupe_capacity");return;}
     if(slot) {memset(slot,0,sizeof(*slot));strlcpy(slot->id,cmd->id,sizeof(slot->id));slot->expires=cmd->expires;}
     if(!atomic_load(&connected) || !wifi_sta_is_connected() || atomic_load(&stop_requested)) {acknowledge(cmd->id,i,"rejected","mqtt_disconnected");return;}
     if(cmd->expires < now_ms() || cmd->expires > now_ms()+20000) {acknowledge(cmd->id,i,"rejected","command_expired");return;}
     if(cmd->mode) {
-        if(cmd->automatic || cmd->duration || (i!=2 && i!=3)) {acknowledge(cmd->id,i,"rejected","invalid_mode");return;}
+        if(cmd->automatic || cmd->duration) {acknowledge(cmd->id,i,"rejected","invalid_mode");return;}
         bool enabled=cmd->mode==1;
         if(save_mode(i,enabled)!=ESP_OK) {acknowledge(cmd->id,i,"failed","mode_save_failed");return;}
         portENTER_CRITICAL(&state_mux);automatic_modes[i]=enabled;portEXIT_CRITICAL(&state_mux);
-        low_since=high_since=0;
-        if(i==3 && !stop(i,"automation_mode_changed")) {acknowledge(cmd->id,i,"failed","output_stop_failed");return;}
+        if(i==3)low_since=high_since=0;
+        if((i==3 || (!enabled && auto_active[i])) && !stop(i,"automation_mode_changed")) {acknowledge(cmd->id,i,"failed","output_stop_failed");return;}
         acknowledge(cmd->id,i,"done",enabled?"auto_enabled":"auto_paused");return;
     }
-    if(cmd->automatic && (i!=2 || !automatic_modes[2] || !cmd->on || cmd->duration!=2000)) {
+    bool auto_allowed=cmd->on && automatic_modes[i] &&
+        ((i==2 && cmd->duration==2000) || (i<2 && cmd->duration>=1 && cmd->duration<=30000));
+    if(cmd->automatic && !auto_allowed) {
         acknowledge(cmd->id,i,"rejected","auto_not_allowed");return;
     }
-    if(!cmd->automatic && (i==2 || i==3)) {
+    if(!cmd->automatic) {
         esp_err_t saved=save_mode(i,false);
         portENTER_CRITICAL(&state_mux);automatic_modes[i]=false;portEXIT_CRITICAL(&state_mux);
-        low_since=high_since=0;
+        if(i==3)low_since=high_since=0;
         if(saved!=ESP_OK) {stop(i,"mode_save_failed");acknowledge(cmd->id,i,"failed","mode_save_failed");return;}
     }
     if(cmd->on && (cmd->duration>600000 || (i!=3 && (cmd->duration==0 || cmd->duration>30000)))) {
         acknowledge(cmd->id,i,"rejected","invalid_duration");return;
+    }
+    if(cmd->on && i<2 && (outputs[1-i] || pending_stop[1-i] || active_ids[1-i][0])) {
+        acknowledge(cmd->id,i,"rejected","pump_interlock");return;
     }
     if(cmd->on && (active_ids[i][0] || pending_stop[i])) {acknowledge(cmd->id,i,"rejected","actuator_busy");return;}
     if(!cmd->on) {
@@ -128,6 +135,7 @@ static void apply(const command_t *cmd) {
     }
     if(output(i,true)!=ESP_OK) {acknowledge(cmd->id,i,"failed","output_start_failed");return;}
     portENTER_CRITICAL(&state_mux); outputs[i]=true; portEXIT_CRITICAL(&state_mux);
+    auto_active[i]=cmd->automatic;
     strlcpy(active_ids[i],cmd->id,sizeof(active_ids[i]));
     stop_at[i]=cmd->duration ? now_ms()+cmd->duration : 0;
     acknowledge(cmd->id,i,"running","output_on");
@@ -143,12 +151,12 @@ static void automatic_light(void) {
     if(!automatic_modes[3]) {low_since=high_since=0;return;}
     if(fault) {low_since=high_since=0;if(outputs[3])stop(3,"light_sensor_fault");return;}
     if(!isfinite(lux) || lux<0 || time-sampled>3000) {low_since=high_since=0;return;}
-    if(lux<3000) {
+    if(lux<100) {
         high_since=0;if(!low_since)low_since=time;
         if(!outputs[3] && !pending_stop[3] && time-low_since>=10000 && output(3,true)==ESP_OK) {
             portENTER_CRITICAL(&state_mux);outputs[3]=true;portEXIT_CRITICAL(&state_mux);
         }
-    } else if(lux>4000) {
+    } else if(lux>300) {
         low_since=0;if(!high_since)high_since=time;
         if(outputs[3] && time-high_since>=30000)stop(3,"light_sufficient");
     } else low_since=high_since=0;
@@ -174,10 +182,10 @@ esp_err_t plant_control_init(plant_control_ack_fn callback) {
     publish_ack=callback;
     nvs_handle_t handle;
     if(nvs_open("automation",NVS_READONLY,&handle)==ESP_OK) {
-        uint8_t value=0;
-        if(nvs_get_u8(handle,"light",&value)==ESP_OK)automatic_modes[3]=value==1;
-        value=0;
-        if(nvs_get_u8(handle,"spray",&value)==ESP_OK)automatic_modes[2]=value==1;
+        for(int i=0;i<4;i++) {
+            uint8_t value=0;
+            if(nvs_get_u8(handle,mode_keys[i],&value)==ESP_OK)automatic_modes[i]=value==1;
+        }
         nvs_close(handle);
     }
     snprintf(boot_id,sizeof(boot_id),"%08lx",(unsigned long)esp_random());
@@ -219,7 +227,10 @@ void plant_control_status(cJSON *root) {
     cJSON_AddStringToObject(root,"boot_id",boot_id);
     cJSON_AddBoolToObject(root,"control_ready",queue!=NULL);
     cJSON_AddBoolToObject(root,"automation_ready",queue!=NULL);
+    cJSON_AddBoolToObject(root,"timed_pumps_ready",queue!=NULL);
     cJSON *automation=cJSON_AddObjectToObject(root,"automation");
+    cJSON_AddBoolToObject(automation,"pump",modes[0]);
+    cJSON_AddBoolToObject(automation,"fertilizer",modes[1]);
     cJSON_AddBoolToObject(automation,"grow_light",modes[3]);
     cJSON_AddBoolToObject(automation,"spray",modes[2]);
     if(isfinite(lux))cJSON_AddNumberToObject(root,"light_lux",lux);else cJSON_AddNullToObject(root,"light_lux");

@@ -12,7 +12,7 @@ export function fetchLatestVision() {
   return http.get('/vision/latest')
 }
 
-/** 立刻抓拍并分析一次(阶段 5 才真正可用) */
+/** 提交一次异步抓拍分析；任务进度由最新记录接口查询。 */
 export function analyzeNow() {
   return http.post('/vision/analyze')
 }

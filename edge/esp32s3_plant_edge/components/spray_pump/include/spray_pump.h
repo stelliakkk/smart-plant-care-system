@@ -15,9 +15,6 @@ extern "C" {
 esp_err_t spray_pump_init(void);
 esp_err_t spray_pump_set_duty_percent(uint8_t duty_percent);
 esp_err_t spray_pump_stop(void);
-/* 启动验证：默认 50% PWM，持续 5 秒后自动关闭。 */
-esp_err_t spray_pump_run_test(void);
-
 #ifdef __cplusplus
 }
 #endif

@@ -1,200 +1,47 @@
-# MQTT 主题与报文格式
+# 当前MQTT通信契约
 
-边缘端（ESP32）和后端之间只有一条通道：MQTT。
-这份文档就是双方的**通信合同** —— 改任何一个字段名之前，先想想对面要不要一起改。
-
-## 1. 主题命名
-
-```
-plant/{device_id}/{channel}
-```
-
-| 频道 | 方向 | 说明 |
+| 主题 | 方向 | QoS / retain |
 |---|---|---|
-| `telemetry` | 板子 → 后端 | 传感器数据，定期上报 |
-| `status` | 板子 → 后端 | 心跳，用于判断在线/离线 |
-| `cmd` | 后端 → 板子 | 执行器指令 |
-| `cmd_ack` | 板子 → 后端 | 指令回执（执行了？被拒绝了？） |
-| `vision` | 后端 → 板子 | AI 诊断结论（可选，让板子的屏幕显示） |
+| plant/edge01/telemetry | S3→后端 | 0 / false |
+| plant/edge01/status | S3→后端 | 0 / false |
+| plant/edge01/cmd | 后端→S3 | 1 / false |
+| plant/edge01/cmd_ack | S3→后端 | 1 / false |
+| plant/cam01/status | CAM→后端 | 0 / false |
 
-传感器/执行器节点编号为 `edge01`；视觉节点编号为 `cam01`。两者是独立设备，
-后端分别订阅 `plant/edge01/#` 与 `plant/cam01/status`。
+后端按这些精确主题注册处理函数，当前不发布AI vision控制主题。QoS1可能重复，不能假设一次且仅一次；动作必须关联指令ID、会话、期限并去重，断网不能假设能补发有效动作。
 
-- 后端：`backend/.env` 的 `DEVICE_ID`
-- 边缘端：`edge/main/app_config.h` 的 `PLANT_DEVICE_ID`
+## 上行
 
-**这两处必须一致**，否则后端订阅不到板子的数据（表现为"板子在线但页面没数据"）。
+telemetry含device_id、soil_moisture、soil_ec、temperature、light_lux。缺测null；当前盐分/温度始终null，湿度是标定后的相对百分比，不是经实测验证的绝对含水量。
 
-后端订阅的通配主题：
+可选data_source取device/simulated/unknown；旧固件缺省按device保存。backend/scripts/sim_device.py显式发送simulated；后端网页模拟接口也强制标记simulated。unknown用于迁移前无来源信息的历史记录，不能推断为真实测量。模拟脚本仅用于遥测/在线状态展示，不模拟新版控制回执、自动模式或板端互锁；控制规则测试使用backend/tests下的隔离模拟。
 
-```
-plant/{device_id}/#
-```
+S3心跳含online、rssi、uptime_s、fault、boot_id、control_ready、actuators四路布尔；automation_ready、automation四路布尔、timed_pumps_ready、light_lux、light_fault。timed_pumps_ready缺失/false时后端禁止新的定时泵命令，但兼容旧固件原有功能。
 
-`#` 是 MQTT 的多层通配符，一条订阅就能覆盖全部频道。
+CAM每3秒发布device_id=cam01和snapshot_url=http://实际IP/capture，stream_url为空。图片走HTTP；后端每300秒定时拍照、保存并分析，不再每分钟仅抓元数据。
 
-## 2. QoS 与保留消息
-
-| 频道 | QoS | 说明 |
-|---|---|---|
-| `telemetry` | 0 | 丢了就丢了，下一轮还有。用 QoS 1 只是白白增加流量 |
-| `status` | 0 | 同上，心跳本来就会周期性重发 |
-| `cmd` | 1 | **必须用 1**，指令不能丢。断线重连后 broker 会补发 |
-| `cmd_ack` | 1 | 回执也不能丢，否则后端不知道命令到底执行了没 |
-
-暂不使用 retained 消息。将来如果需要"前端一打开就看到最后一个状态"，
-可以给 `status` 加 retain。
-
-## 3. 报文格式
-
-全部是 **UTF-8 编码的 JSON**。字段名统一用 `snake_case`。
-
-### 3.1 `telemetry` —— 传感器上报
+## 指令
 
 ```json
-{
-  "device_id": "edge01",
-  "ts": "2026-09-13T15:13:08",
-  "soil_moisture": 44.0,
-  "soil_ec": 1.2,
-  "temperature": 24.1,
-  "light_lux": 536.0
-}
+{"command_id":"0123456789abcdef0123456789abcdef","boot_id":"1234abcd","actuator":"pump","action":"on","duration_ms":1000,"source":"auto","deadline_uptime_ms":115000}
 ```
 
-| 字段 | 类型 | 单位 | 说明 |
-|---|---|---|---|
-| `device_id` | string | — | 设备编号，缺省为 `edge01` |
-| `ts` | string | ISO 8601 | 采集时间，**留空则用服务器接收时间** |
-| `soil_moisture` | number | % | 土壤湿度 |
-| `soil_ec` | number | mS/cm | 土壤盐分（反映肥力） |
-| `temperature` | number | °C | 环境温度 |
-| `light_lux` | number | lux | 光照强度 |
+command_id为32位小写十六进制UUID，boot_id为本次S3的8位小写十六进制会话。deadline_uptime_ms是板端单调时钟期限，后端通常设15秒有效；板端限制最大未来窗口20秒，拒绝旧会话、过期、retain、非法数字/字段及>1024字节报文。
 
-**每个测量值都允许为 `null`** —— 某个传感器还没接上时，其余数据要能正常入库。
-后端对应的是 `app/schemas/telemetry.py` 里的 `TelemetryPayload`。
+- 手动：source=manual，四路on/off，泵1～30000ms，灯0持续或≤600000ms。
+- 自动：source=auto，仅pump/fertilizer短时on（1～30000ms），或spray/on/2000ms；对应板端自动模式必须已启用，自动远程灯指令拒绝，灯用本地传感器。
+- 模式：source=manual，action=auto_on/auto_off，duration_ms=0，由后端自动化接口内部产生，四路支持并保存NVS。
+- 后端外部/command只允许手动on/off，自动执行必须由内部规则生成；原source=ai不是固件可执行来源。
+- 两泵互斥涵盖手动/自动，板端拒绝另一泵正运行/停止的开启指令，reason=pump_interlock。
 
-### 3.2 `status` —— 心跳
+## 回执
 
 ```json
-{
-  "device_id": "edge01",
-  "online": true,
-  "rssi": -69,
-  "uptime_s": 3600,
-  "fault": ""
-}
+{"command_id":"0123456789abcdef0123456789abcdef","boot_id":"1234abcd","actuator":"pump","result":"running","reason":"output_on"}
 ```
 
-`fault` 非空表示板子自检异常（例如"水泵驱动异常""传感器读取失败"）。
-后端超过 **30 秒**收不到任何上行报文就判定为离线（见 `device_service.OFFLINE_TIMEOUT_SEC`）。
+running=驱动设置开启；done=关闭或模式改变完成；rejected=明确拒绝；failed=驱动/持久化失败。后端pending/running超时显示timeout/实际状态未知。没有电流/流量反馈，回执不能证明负载实际运动。关闭失败保留开启/未知状态并重试；重复ID重放既有回执，不重复启动。
 
-### 3.3 `cam01/status` —— 相机服务发现
+## 联调
 
-```json
-{
-  "device_id": "cam01",
-  "online": true,
-  "rssi": -58,
-  "uptime_s": 3600,
-  "fault": "",
-  "stream_url": "http://192.168.1.88/stream",
-  "snapshot_url": "http://192.168.1.88/capture"
-}
-```
-
-相机每 3 秒上报一次。热点重连会改变 IP，因此后端只信任最新一次状态中的 URL；
-图片本体不走 MQTT。`stream_url` 是 MJPEG 实时流，`snapshot_url` 只由后端每分钟抓取
-一次以记录帧元数据，JPEG 随即丢弃。
-
-### 3.4 `cmd` —— 执行器指令
-
-```json
-{
-  "actuator": "pump",
-  "action": "on",
-  "duration_ms": 3000,
-  "source": "manual"
-}
-```
-
-| 字段 | 取值 | 说明 |
-|---|---|---|
-| `actuator` | `pump` / `fertilizer` / `grow_light` / `spray` | 补水泵 / 施肥泵 / 补光灯 / 喷雾 |
-| `action` | `on` / `off` | — |
-| `duration_ms` | 0 ~ 600000 | 计划运行时长；`0` 表示"不自动关，等下次指令" |
-| `source` | `manual` / `auto` / `ai` | 谁下的令：前端手动 / 阈值闭环 / AI 诊断 |
-
-> ### ⚠️ 这条指令只是"意图"
->
-> 后端说"开 3 秒"，**不代表板子真会开 3 秒**。板子有自己的安全规则：
-> 水泵连续运行上限、两次启动的最小间隔、喷雾每天次数上限、缺水保护、看门狗……
-> 超出限制时板子**拒绝执行**并回报 `rejected`。
->
-> 为什么不让后端来管安全？因为**断网时后端就失联了**。
-> 如果"水泵最多抽 10 秒"写在后端，一旦网络断了，水泵可能一直抽下去，
-> 把植物淹死甚至烧坏水泵。**安全逻辑必须在设备本地。**
-
-### 3.5 `cmd_ack` —— 指令回执
-
-```json
-{
-  "actuator": "pump",
-  "result": "done",
-  "reason": "已运行 3000 ms",
-  "ts": "2026-09-13T15:13:22"
-}
-```
-
-`result` 三种取值：
-
-| 值 | 含义 |
-|---|---|
-| `done` | 执行完成 |
-| `rejected` | 被本地安全策略拒绝（`reason` 里写清楚原因，如"今日喷雾次数已达上限"） |
-| `failed` | 尝试执行但失败（如"水泵电流异常"） |
-
-### 3.6 `vision` —— AI 诊断结论（可选）
-
-```json
-{
-  "has_issue": true,
-  "issue_type": "虫害",
-  "description": "叶片背面可见密集白色小点，疑似蚜虫",
-  "advice": "隔离该植株，使用低毒杀虫剂喷洒叶背",
-  "need_spray": true
-}
-```
-
-`need_spray` 为真时，后端会走 `control_service.decide_from_vision()` 下发喷雾指令。
-
-## 4. 用命令行手动收发（调试用）
-
-装好 Mosquitto 后自带这两个工具：
-
-```powershell
-# 订阅全部上行报文, 实时看板子在发什么
-mosquitto_sub -h 127.0.0.1 -t "plant/edge01/#" -v
-
-# 手动发一条传感器数据
-mosquitto_pub -h 127.0.0.1 -t "plant/edge01/telemetry" -m "{\"device_id\":\"edge01\",\"soil_moisture\":18.5,\"light_lux\":900}"
-
-# 手动下发一条补水指令
-mosquitto_pub -h 127.0.0.1 -t "plant/edge01/cmd" -m "{\"actuator\":\"pump\",\"action\":\"on\",\"duration_ms\":3000,\"source\":\"manual\"}"
-```
-
-如果 broker 开了账号验证，加上 `-u 用户名 -P 密码`。
-
-## 5. 联调顺序建议
-
-遇到"数据上不来"时，从下往上逐段排查，别一上来就怀疑代码：
-
-1. **broker 起着吗** —— `mosquitto_sub` 能不能连上
-2. **板子在发吗** —— `mosquitto_sub -t "plant/#" -v` 有没有刷屏
-3. **后端订阅了吗** —— 看后端日志有没有 `已订阅上行主题: plant/edge01/#`
-4. **主题对得上吗** —— 两端的 `device_id` 是否一致（最常见的问题）
-5. **字段解析过了吗** —— 后端日志有没有"上报数据格式不合法, 已丢弃"
-
-## 2026-10 网页控制扩展
-
-新版 S3 的 cmd/cmd_ack 加入 command_id、boot_id、deadline_uptime_ms、running 回执与状态快照，完整协议及限制见 [manual_control.md](manual_control.md)。旧的不含会话/截止时间的指令不再用于实际设备控制；相机及传感器上行主题保持不变。
+查看上行可用mosquitto_sub -h 127.0.0.1 -t "plant/#" -v。实际控制通过网页/API，不使用旧缺少command_id/boot_id/期限的示例报文。若两板MQTT超时，先核对电脑WLAN实际IP、固件内broker地址、监听1883与防火墙；网络头文件生成后需重新编译烧录才生效。

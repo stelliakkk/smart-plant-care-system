@@ -18,7 +18,7 @@ class ActuatorName(str, Enum):
     """执行器枚举。值同时也是 MQTT 报文里的字符串。"""
 
     PUMP = "pump"                 # 补水泵
-    FERTILIZER = "fertilizer"     # 施肥泵(高浓度盐水)
+    FERTILIZER = "fertilizer"     # 施肥泵；当前逻辑用于定时清水演示
     GROW_LIGHT = "grow_light"     # 补光灯
     SPRAY = "spray"               # 农药喷雾
 
@@ -64,6 +64,7 @@ class DeviceStatus(BaseModel):
     control_ready: bool = False
     actuators: dict[str, bool] = Field(default_factory=dict)
     automation_ready: bool = False
+    timed_pumps_ready: bool = False
     automation: dict[str, bool] = Field(default_factory=dict)
     light_lux: float | None = None
     light_fault: str = ""

@@ -7,6 +7,7 @@
  * 因为"传感器没接"和"读数是 0"是两回事, 不能混淆。
  */
 import { computed } from 'vue'
+import ReadingSourceBadge from './ReadingSourceBadge.vue'
 
 const props = defineProps({
   label: { type: String, required: true },
@@ -15,6 +16,7 @@ const props = defineProps({
   icon: { type: String, default: '📟' },
   hint: { type: String, default: '' },
   digits: { type: Number, default: 1 },
+  dataSource: { type: String, default: 'unknown' },
 })
 
 const hasValue = computed(
@@ -35,6 +37,7 @@ const text = computed(() => {
     </div>
     <div class="value" :class="{ empty: !hasValue }">
       {{ text }}<span v-if="hasValue" class="unit">{{ unit }}</span>
+      <ReadingSourceBadge v-if="hasValue" :source="dataSource" />
     </div>
     <div class="hint">{{ hint }}</div>
   </div>

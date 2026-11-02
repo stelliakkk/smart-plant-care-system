@@ -157,7 +157,7 @@ def test_mode_sync_dedupes_pending(setup):
 
 def test_api_modes_stop_all_and_invalid_input(setup):
     with TestClient(app) as client:
-        assert client.post('/api/device/automation',json={'actuator':'pump','enabled':True}).status_code==422
+        assert client.post('/api/device/automation',json={'actuator':'unknown','enabled':True}).status_code==422
         assert client.post('/api/device/automation',json={'actuator':'spray','enabled':'true'}).status_code==422
         assert client.post('/api/device/automation',json={'actuator':'spray','enabled':True}).status_code==200
         policy(light_auto=True)

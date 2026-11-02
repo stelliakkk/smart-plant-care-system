@@ -12,7 +12,7 @@ SQLite 的两个坑, 这里都处理了:
 import logging
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
@@ -48,6 +48,15 @@ def init_db() -> None:
     from app.db import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    # create_all does not add columns to existing tables. Preserve old readings
+    # without guessing whether they came from hardware or the old simulator.
+    with engine.begin() as connection:
+        columns = {column['name'] for column in inspect(connection).get_columns('sensor_reading')}
+        if 'data_source' not in columns:
+            connection.execute(text(
+                "ALTER TABLE sensor_reading ADD COLUMN data_source VARCHAR(16) "
+                "NOT NULL DEFAULT 'unknown'"
+            ))
     logger.info("数据表就绪: %s", ", ".join(sorted(Base.metadata.tables.keys())))
 
 

@@ -56,12 +56,34 @@ def _submit(cmd, device_id=None, *, internal=False):
     elif not status.control_ready or not status.boot_id: reason='当前 S3 固件未启用网页控制，请先烧录新版固件'
     elif cmd.action == 'on' and cmd.actuator.value != 'grow_light' and not 1 <= cmd.duration_ms <= 30000:
         reason='泵运行时长必须为 1～30000 毫秒'
+    if not reason and cmd.actuator.value in auto.PUMPS:
+        if internal and not status.timed_pumps_ready:
+            reason='请先烧录支持定时泵的新版S3固件'
+        elif cmd.action=='on':
+            other='fertilizer' if cmd.actuator.value=='pump' else 'pump'
+            if status.actuators.get(other) is not False:
+                reason='另一泵正在运行或状态未知，补水与施肥互斥'
+            else:
+                with SessionLocal() as db:
+                    _expire(db)
+                    active=db.scalar(select(ActuatorCommand).where(
+                        ActuatorCommand.device_id==device_id,ActuatorCommand.boot_id==status.boot_id,
+                        ActuatorCommand.actuator.in_(auto.PUMPS),ActuatorCommand.action=='on',
+                        ActuatorCommand.result.in_(['pending','running'])))
+                    if active: reason='补水或施肥指令仍待确认/运行，两泵互斥'
     if not reason and internal and cmd.source != 'manual':
         policy=auto.status()
-        if (cmd.actuator.value!='spray' or cmd.action!='on' or cmd.duration_ms!=2000 or
-            not policy['spray_auto'] or not status.automation.get('spray') or
-            policy['cooldown_remaining_sec']>0 or status.actuators.get('spray') is not False):
-            reason='自动喷洒模式、时长、冷却或输出状态不满足条件'
+        name=cmd.actuator.value
+        if name=='spray':
+            allowed=(cmd.action=='on' and cmd.duration_ms==2000 and policy['spray_auto'] and
+                     status.automation.get('spray') and policy['cooldown_remaining_sec']==0 and
+                     status.actuators.get('spray') is False)
+        elif name in auto.PUMPS:
+            allowed=(cmd.action=='on' and policy[auto.MODE_KEYS[name]] and status.timed_pumps_ready and
+                     status.automation.get(name) and status.actuators.get(name) is False and
+                     cmd.duration_ms==policy['pump_schedules'][name]['duration_ms'])
+        else: allowed=False
+        if not allowed: reason='自动模式、时长、冷却或输出状态不满足条件'
     if reason: return dict(sent=False,reason=reason,command=cmd.model_dump(mode='json'),device_id=device_id)
     duration = cmd.duration_ms if cmd.action == 'on' else 0
     command_id=uuid.uuid4().hex
@@ -76,6 +98,8 @@ def _submit(cmd, device_id=None, *, internal=False):
         db.add(row); db.commit()
         if cmd.actuator.value == "spray" and cmd.action == "on":
             auto.reserve_spray(command_id,cmd.source)
+        if cmd.actuator.value in auto.PUMPS and cmd.source=='auto' and cmd.action=='on':
+            auto.reserve_pump(command_id,cmd.actuator.value)
         try: sent=mqtt_client.publish_json(topics.topic_command(device_id),payload,qos=1)
         except Exception: sent=False
         if not sent:

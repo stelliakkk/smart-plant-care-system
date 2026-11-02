@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-闭环控制服务
+早期阈值建议示例（未接入实际执行）
 ---------------------------------------------------------------------
 ★ 本文件只负责"决策", 不负责"兜底"。
 
@@ -11,12 +11,11 @@
 为什么安全策略必须放在边缘端本地?
     一旦断网, 后端就管不到设备了。如果"水泵最长运行 10 秒"这种规则写在
     后端, 那么断网时水泵可能一直抽水, 把植物淹死甚至烧掉水泵。
-    所以下面这些必须由边缘端的 plant_ctrl 组件本地实现:
-        - 水泵单次最长运行时间
-        - 两次运行之间的最小间隔(防止频繁启停)
-        - 喷雾每日次数上限(农药残留)
-        - 施肥与补水的互锁
-        - 看门狗
+    当前plant_control已实现泵限时、补水/施肥互锁和断网停止。
+    最小启停间隔、累计喷洒上限仍待补充；48小时喷洒冷却目前在后端。
+
+实际控制由automation_service与S3 plant_control承担；本文件的建议函数
+保留作参考，不会直接触发设备。
 
 本文件的函数都返回 CommandRequest 或 None(None = 不需要动作),
 由调用方负责真正下发。
@@ -33,7 +32,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------
 SOIL_MOISTURE_LOW = 25.0      # 低于此值认为土壤偏干(%)
 SOIL_MOISTURE_OK = 40.0       # 补水到该值以上就停(%)
-LIGHT_LOW_LUX = 3000.0        # 低于此值考虑补光(lux)
+LIGHT_LOW_LUX = 100.0        # 低于此值考虑补光(lux)
 SOIL_EC_LOW = 0.5             # 土壤盐分偏低(mS/cm)
 SOIL_EC_HIGH = 2.5            # 土壤盐分偏高
 
@@ -72,7 +71,10 @@ def decide_lighting(payload: TelemetryPayload) -> CommandRequest | None:
             duration_ms=0,          # 0 表示"一直开着, 等下次判断再关"
             source="auto",
         )
-    # 光照够了就关灯
+    if lux <= 300.0:
+        return None
+    # 此旧建议函数未接入实际控制；实际计时判断在S3 plant_control。
+    # 高于300 lux才建议关灯
     return CommandRequest(
         actuator=ActuatorName.GROW_LIGHT,
         action="off",
@@ -82,7 +84,7 @@ def decide_lighting(payload: TelemetryPayload) -> CommandRequest | None:
 
 
 def decide_fertilizing(payload: TelemetryPayload) -> CommandRequest | None:
-    """根据土壤盐分决定是否补肥(高浓度盐水)。"""
+    """旧EC阈值建议示例；无EC标定，当前定时施肥不使用此函数。"""
     ec = payload.soil_ec
     if ec is None:
         return None
@@ -103,8 +105,8 @@ def decide_from_vision(need_spray: bool) -> CommandRequest | None:
     """
     AI 诊断结果为"有虫害"时给出喷药意图。
 
-    ⚠️ 每日喷洒次数上限由边缘端把关 —— 后端可以重复下命令,
-       边缘端必须自己拒绝超限的请求(并回报 rejected)。
+    此旧建议函数未接入自动喷洒。实际规则要求两次有效定时照片及后端冷却；
+    板端累计喷洒限制尚未实现，不能依据本示例认定已有次数保护。
     """
     if not need_spray:
         return None

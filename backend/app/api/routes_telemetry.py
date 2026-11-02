@@ -44,6 +44,6 @@ def get_history(device_id: str | None = None, limit: int = 200) -> dict:
 @router.post("/simulate", summary="手动写入一条模拟数据(调试用)")
 def simulate(payload: TelemetryPayload) -> dict:
     """把一条数据按真实流程入库, 方便在没有硬件时联调前端。"""
-    new_id = telemetry_service.save_reading(payload)
+    new_id = telemetry_service.save_reading(payload.model_copy(update={"data_source": "simulated"}))
     # TODO(阶段 2): 这里之后还要顺手做阈值判断 + WebSocket 推送给前端
     return {"saved": True, "id": new_id}

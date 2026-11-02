@@ -1,12 +1,6 @@
-/*
- * ESP32-S3 GPIO13 农药喷雾泵 PWM 驱动
- *
- * GPIO13 只连接 MOS 驱动输入，不直接连接水泵。初始化后输出为 0%。
- */
+/* spray_pump: GPIO PWM driver; initialization leaves output off. */
 #include <stdbool.h>
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "driver/ledc.h"
 #include "esp_check.h"
 #include "esp_log.h"
@@ -21,8 +15,6 @@ static const char *TAG = "SPRAY_PUMP";
 #define SPRAY_PUMP_PWM_RESOLUTION LEDC_TIMER_10_BIT
 #define SPRAY_PUMP_PWM_RES_BITS   10
 #define SPRAY_PUMP_OUTPUT_INVERT  0
-#define SPRAY_PUMP_TEST_DUTY_PERCENT 50
-#define SPRAY_PUMP_TEST_DURATION_MS 5000
 #define SPRAY_PUMP_PWM_MODE       LEDC_LOW_SPEED_MODE
 #define SPRAY_PUMP_PWM_TIMER      LEDC_TIMER_2
 #define SPRAY_PUMP_PWM_CHANNEL    LEDC_CHANNEL_2
@@ -96,23 +88,4 @@ esp_err_t spray_pump_set_duty_percent(uint8_t duty_percent)
 esp_err_t spray_pump_stop(void)
 {
     return spray_pump_set_duty_percent(0);
-}
-
-esp_err_t spray_pump_run_test(void)
-{
-    ESP_RETURN_ON_FALSE(s_initialized, ESP_ERR_INVALID_STATE, TAG,
-                        "not initialized, call spray_pump_init() first");
-
-    ESP_LOGI(TAG, "Spray pump test START: duty=%d%%, duration=%d ms",
-             SPRAY_PUMP_TEST_DUTY_PERCENT, SPRAY_PUMP_TEST_DURATION_MS);
-    ESP_RETURN_ON_ERROR(spray_pump_set_duty_percent(
-                            SPRAY_PUMP_TEST_DUTY_PERCENT),
-                        TAG, "start spray pump test failed");
-
-    vTaskDelay(pdMS_TO_TICKS(SPRAY_PUMP_TEST_DURATION_MS));
-
-    ESP_RETURN_ON_ERROR(spray_pump_stop(), TAG,
-                        "stop spray pump test failed");
-    ESP_LOGI(TAG, "Spray pump test DONE: GPIO%d duty=0%%", SPRAY_PUMP_GPIO);
-    return ESP_OK;
 }

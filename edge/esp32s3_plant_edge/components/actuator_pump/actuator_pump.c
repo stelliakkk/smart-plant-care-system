@@ -1,11 +1,4 @@
-/*
- * ESP32-S3 补水泵 PWM 驱动
- * ---------------------------------------------------------------------
- * 默认配置用于首次硬件验证：GPIO9 输出 20kHz、50% 占空比，运行 5 秒
- * 后自动关闭。所有需要经常调整的参数集中在本文件顶部。
- */
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+/* actuator_pump: GPIO PWM driver; initialization leaves output off. */
 
 #include "driver/ledc.h"
 #include "esp_check.h"
@@ -27,9 +20,6 @@ static const char *TAG = "ACTUATOR_PUMP";
 #define PUMP_DUTY_RESOLUTION            LEDC_TIMER_10_BIT
 #define PUMP_DUTY_RESOLUTION_BITS       10
 
-/* 上电硬件验证参数。 */
-#define PUMP_TEST_DUTY_PERCENT          50
-#define PUMP_TEST_DURATION_MS           5000
 
 /* 0 = GPIO 高电平有效；1 = GPIO 低电平有效。 */
 #define PUMP_OUTPUT_INVERT              0
@@ -110,21 +100,4 @@ esp_err_t actuator_pump_set_duty_percent(uint8_t duty_percent)
 esp_err_t actuator_pump_stop(void)
 {
     return actuator_pump_set_duty_percent(0);
-}
-
-esp_err_t actuator_pump_run_test(void)
-{
-    ESP_RETURN_ON_FALSE(s_initialized, ESP_ERR_INVALID_STATE, TAG,
-                        "not initialized, call actuator_pump_init() first");
-
-    ESP_LOGI(TAG, "Pump test START: duty=%d%%, duration=%d ms",
-             PUMP_TEST_DUTY_PERCENT, PUMP_TEST_DURATION_MS);
-    ESP_RETURN_ON_ERROR(actuator_pump_set_duty_percent(PUMP_TEST_DUTY_PERCENT),
-                        TAG, "start pump test failed");
-
-    vTaskDelay(pdMS_TO_TICKS(PUMP_TEST_DURATION_MS));
-
-    ESP_RETURN_ON_ERROR(actuator_pump_stop(), TAG, "stop pump test failed");
-    ESP_LOGI(TAG, "Pump test DONE: GPIO%d duty=0%%", PUMP_GPIO);
-    return ESP_OK;
 }

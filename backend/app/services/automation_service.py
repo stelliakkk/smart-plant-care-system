@@ -8,6 +8,11 @@ from app.schemas.device import CommandRequest
 from app.services import command_service as cs, device_service as ds
 
 COOLDOWN = timedelta(hours=48)
+MODE_KEYS={'grow_light':'light_auto','spray':'spray_auto','pump':'pump_auto','fertilizer':'fertilizer_auto'}
+PUMPS=('pump','fertilizer')
+
+def _schedule_default():
+    return dict(interval_sec=0,duration_ms=0,next_run='',last_command='',last_reason='未配置清水演示参数')
 
 def _load(db):
     row = db.get(AutomationState, settings.device_id)
@@ -17,6 +22,10 @@ def _load(db):
     state = dict(light_auto=False, spray_auto=False, count=0, last_record=0,
                  last_photo='', eligible_after='', cooldown_until='', last_command='', last_reason='尚未开启自动模式', events=[])
     state.update(json.loads(row.data))
+    for name in PUMPS: state.setdefault(MODE_KEYS[name],False)
+    schedules=state.setdefault('pump_schedules',{})
+    for name in PUMPS:
+        schedule=_schedule_default();schedule.update(schedules.get(name,{}));schedules[name]=schedule
     return row, state
 
 def _save(db, row, state):
@@ -35,18 +44,29 @@ def status():
         state['cooldown_remaining_sec'] = max(0, int((until-datetime.now()).total_seconds()))
         board = ds.get_status()
         state['board_modes'] = board.automation
+        state['timed_pumps_ready'] = board.timed_pumps_ready and board.online
+        for schedule in state['pump_schedules'].values():
+            command=db.get(ActuatorCommand,schedule['last_command']) if schedule['last_command'] else None
+            schedule['last_command_status']=cs.serialize(command) if command else None
         state['automation_ready'] = board.automation_ready and board.online
         state['light_lux'] = board.light_lux
         state['light_fault'] = board.light_fault
         command=db.get(ActuatorCommand,state['last_command']) if state['last_command'] else None
         state['spray_command_status'] = cs.serialize(command) if command else None
-        state['thresholds'] = dict(on_lux=3000, on_sec=10, off_lux=4000, off_sec=30)
+        state['thresholds'] = dict(on_lux=100, on_sec=10, off_lux=300, off_sec=30)
         return state
 
 def configure(actuator, enabled):
     with cs._lock, SessionLocal() as db:
         row, state = _load(db)
-        state['light_auto' if actuator == 'grow_light' else 'spray_auto'] = enabled
+        if actuator not in MODE_KEYS: raise ValueError('不支持的执行器')
+        if actuator in PUMPS:
+            schedule=state['pump_schedules'][actuator]
+            if enabled and not (60<=schedule['interval_sec']<=604800 and 1<=schedule['duration_ms']<=30000):
+                raise ValueError('请先保存定时间隔与运行时长')
+            schedule['next_run']=(datetime.now()+timedelta(seconds=schedule['interval_sec'])).isoformat() if enabled else ''
+            schedule['last_reason']='恢复自动，重新计时' if enabled else '自动暂停'
+        state[MODE_KEYS[actuator]] = enabled
         if actuator == 'spray':
             state['count'] = 0
             state['last_photo'] = ''
@@ -57,10 +77,13 @@ def configure(actuator, enabled):
         return status()
 
 def pause_manual(actuator):
-    if actuator not in ('grow_light', 'spray'): return
+    if actuator not in MODE_KEYS: return
     with cs._lock, SessionLocal() as db:
         row, state = _load(db)
-        state['light_auto' if actuator == 'grow_light' else 'spray_auto'] = False
+        state[MODE_KEYS[actuator]] = False
+        if actuator in PUMPS:
+            state['pump_schedules'][actuator]['next_run']=''
+            state['pump_schedules'][actuator]['last_reason']='手动操作，自动暂停'
         if actuator == 'spray':
             state['count'] = 0
             state['eligible_after'] = datetime.now().isoformat()
@@ -73,7 +96,8 @@ def reconcile():
         board = ds.get_status()
         if not board.online or not board.automation_ready: return
         state = status()
-        for actuator, key in [('grow_light','light_auto'), ('spray','spray_auto')]:
+        for actuator,key in MODE_KEYS.items():
+            if actuator in PUMPS and not board.timed_pumps_ready: continue
             desired = state[key]
             if board.automation.get(actuator) is desired: continue
             recent = cs.history(30)
@@ -145,7 +169,12 @@ def evaluate(record):
 
 def reset_sequence():
     with cs._lock, SessionLocal() as db:
-        row,state=_load(db); state['count']=0;state['last_photo']='';state['eligible_after']=datetime.now().isoformat();_save(db,row,state)
+        row,state=_load(db); state['count']=0;state['last_photo']='';state['eligible_after']=datetime.now().isoformat()
+        for name in PUMPS:
+            schedule=state['pump_schedules'][name]
+            schedule['next_run']=(datetime.now()+timedelta(seconds=schedule['interval_sec'])).isoformat() if state[MODE_KEYS[name]] and schedule['interval_sec'] else ''
+            if state[MODE_KEYS[name]]: schedule['last_reason']='服务或S3重启，重新计时，不补发'
+        _save(db,row,state)
 
 def observe_light(data):
     """Journal changed board reports, without claiming measured lamp output."""
@@ -165,3 +194,65 @@ def observe_light(data):
             _event(state,reason)
         state['light_report_fault']=fault
         _save(db,row,state)
+
+def configure_pump(actuator, interval_sec, duration_ms):
+    if actuator not in PUMPS or type(interval_sec) is not int or type(duration_ms) is not int or not 60<=interval_sec<=604800 or not 1<=duration_ms<=30000:
+        raise ValueError('定时间隔60～604800秒，运行时长1～30000毫秒')
+    with cs._lock, SessionLocal() as db:
+        row,state=_load(db)
+        state[MODE_KEYS[actuator]]=False
+        schedule=state['pump_schedules'][actuator]
+        schedule.update(interval_sec=interval_sec,duration_ms=duration_ms,next_run='',last_reason='参数已保存，自动暂停；请恢复自动')
+        _event(state,f'{actuator} 清水演示参数已保存，自动暂停')
+        _save(db,row,state)
+        reconcile()
+        return status()
+
+def reserve_pump(command_id, actuator):
+    # Caller holds command lock, and command is already durable before MQTT publish.
+    with SessionLocal() as db:
+        row,state=_load(db)
+        schedule=state['pump_schedules'][actuator]
+        schedule['last_command']=command_id
+        schedule['last_reason']='定时指令已提交，等待S3确认'
+        # Persist the turn before publishing, including uncertain/failed attempts.
+        # The next contention must not always favor the first pump in PUMPS.
+        state['last_scheduled_pump']=actuator
+        _event(state,f'{actuator} 定时清水演示指令待确认')
+        state['events'][0]['command_id']=command_id
+        _save(db,row,state)
+
+def pump_tick():
+    """Consume each due occurrence before publish; never replay missed/uncertain actions."""
+    with cs._lock:
+        with SessionLocal() as db:
+            _,state=_load(db)
+            last=state.get('last_scheduled_pump')
+        order=PUMPS[::-1] if last==PUMPS[0] else PUMPS
+        for name in order:
+            with SessionLocal() as db:
+                row,state=_load(db);schedule=state['pump_schedules'][name]
+                if not state[MODE_KEYS[name]] or not schedule['next_run']: continue
+                now=datetime.now()
+                if now<datetime.fromisoformat(schedule['next_run']): continue
+                # Rebase, rather than looping over missed intervals after downtime.
+                schedule['next_run']=(now+timedelta(seconds=schedule['interval_sec'])).isoformat()
+                board=ds.get_status()
+                reason=''
+                if not board.online: reason='设备离线，本次跳过'
+                elif not board.timed_pumps_ready: reason='固件不支持定时泵，本次跳过'
+                elif not board.automation.get(name): reason='板端自动模式未确认，本次跳过'
+                schedule['last_reason']=reason or '本次定时机会已受理'
+                _save(db,row,state)
+                duration=schedule['duration_ms']
+            if reason:
+                with SessionLocal() as db:
+                    row,state=_load(db);_event(state,f'{name}：{reason}');_save(db,row,state)
+                continue
+            response=cs.submit(CommandRequest(actuator=name,action='on',duration_ms=duration,source='auto'),internal=True)
+            if not response['sent']:
+                with SessionLocal() as db:
+                    row,state=_load(db)
+                    reason=response.get('reason','指令未发出')
+                    state['pump_schedules'][name]['last_reason']=reason+'，本次跳过'
+                    _event(state,f'{name}：{reason}，本次跳过');_save(db,row,state)

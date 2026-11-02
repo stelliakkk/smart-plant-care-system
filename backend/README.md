@@ -1,112 +1,57 @@
-# 后端服务（Python + FastAPI）
+# 后端服务（FastAPI + SQLite + MQTT）
 
-基于大模型的植物养护系统的**中间层**：承接边缘端（ESP32）的传感器数据，
-向前端（Web / 手机）提供接口，并负责调用 DeepSeek 做图像分析。
+承接S3遥测、维护在线状态与指令回执，调度两路定时泵，下载CAM照片并调用DeepSeek分析，向网页提供API。自动化按单实例、单worker运行。
 
-## 快速开始
+## 启动
 
-> ⚠️ **不要用 ESP-IDF 的虚拟环境装依赖**，会污染 IDF 导致 `idf.py` 跑不起来。
-> 必须在 `backend/.venv` 里操作。
+从项目根目录运行 `start_dev.bat` 可一并启动broker、后端和前端。手动启动：
 
 ```powershell
-cd "D:\Lab\Embedded Curriculum Design\pro\backend"
-
-# 1. 建独立虚拟环境（用系统自带 Python 3.13）
-& "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" -m venv .venv
-
-# 2. 激活
-.\.venv\Scripts\Activate.ps1
-
-# 3. 装依赖
-pip install -r requirements.txt
-
-# 4. 准备配置（然后把 DeepSeek Key 填进去）
-copy .env.example .env
-
-# 5. 建表 + 插一株示例植物
-python scripts\init_db.py
-
-# 6. 启动
-uvicorn app.main:app --reload
+# backend目录；使用独立.venv，不要使用ESP-IDF虚拟环境
+.venv/Scripts/python.exe -m pip install -r requirements.txt -r requirements-dev.txt
+# 首次准备.env并填写需要的配置
+Copy-Item .env.example .env
+.venv/Scripts/python.exe scripts/init_db.py
+.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-打开 <http://127.0.0.1:8000/docs> 就能看到自动生成的接口文档，可直接点击调试。
+接口文档：[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)。Key仅存在`.env`，不提供给前端或设备。
 
-## 目录结构
+## 结构与职责
 
-```
-backend/
-├── app/
-│   ├── main.py          FastAPI 入口：注册路由、CORS、启动/关闭钩子
-│   ├── config.py        读 .env 的全局配置（路径统一转绝对路径）
-│   ├── core/logging.py  统一日志格式
-│   ├── api/             接口层：只负责收发数据
-│   ├── schemas/         数据契约（Pydantic）= 前后端约定的字段
-│   ├── services/        业务层：真正的逻辑
-│   ├── db/              SQLAlchemy 引擎 / Session / ORM 模型
-│   ├── mqtt/            与 ESP32 通信（断线自动重连，连不上不崩）
-│   └── tasks/           APScheduler 定时任务
-├── scripts/
-│   ├── sim_device.py    ★ 虚拟设备：没有硬件时冒充 ESP32 发数据
-│   └── init_db.py       建表 + 示例数据
-├── data/                SQLite 数据库 + 抓拍图片（不进版本库）
-├── tests/
-├── requirements.txt
-└── .env.example
-```
+| 目录 | 内容 |
+|---|---|
+| app/api | 请求、响应与字段校验 |
+| app/schemas | 遥测、指令、设备与分析的数据契约 |
+| app/services | 指令生命周期、自动调度、遥测存储、照片与AI分析 |
+| app/db | ORM模型、Session、启动建表与兼容迁移 |
+| app/mqtt | 收发、重连、消息处理函数注册 |
+| app/tasks | 每秒定时泵检查、定时照片分析、离线与保留期清理 |
+| scripts | 初始化数据库、开发broker、遥测模拟 |
+| tests | 隔离数据库、模拟时钟/MQTT/HTTP的回归测试 |
 
-## 四层职责（改代码前先想清楚该放哪层）
+`control_service.py`保留早期阈值建议示例，未接入实际执行；当前规则在`automation_service.py`与S3本地`plant_control`。
 
-| 层 | 目录 | 只做这些事 |
-|---|---|---|
-| 接口层 | `api/` | 解析请求、调 service、返回结果。**不写业务逻辑** |
-| 业务层 | `services/` | 真正的逻辑：入库、阈值判断、闭环决策、调 DeepSeek |
-| 数据层 | `db/` | ORM 模型与 Session，不写业务规则 |
-| 通信层 | `mqtt/` | 只负责收发报文，不写业务规则 |
+## 当前规则
 
-## 接口清单
+- 补水/施肥为定时清水演示，双重互斥，离线/忙时跳过不补发；同时到期轮换优先，轮次持久保存。
+- 补光由S3本地阈值和持续时间控制，后端同步模式与记录。
+- 连续两次有效定时照片明确虫害且有依据时触发2秒喷洒，后端保存48小时冷却；手动照片不触发。
+- 抓拍与分析已实现，默认每5分钟一次，照片与结果保留7天。`CameraFrame`是旧元数据记录，当前照片保存在`VisionRecord`对应文件中。
+- `/ws`目前只有hello、ping/pong和echo；业务数据仍通过HTTP轮询。
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/health` | 健康检查（前端首页的"后端已连通"就是它） |
-| GET | `/api/device/status` | 边缘端在线状态 |
-| POST | `/api/device/command` | 下发执行器指令 |
-| GET | `/api/telemetry/latest` | 最新一条传感器读数 |
-| GET | `/api/telemetry/history` | 历史读数（画曲线用） |
-| POST | `/api/telemetry/simulate` | 手动塞一条数据（调试前端很方便） |
-| GET | `/api/vision/latest` | 最近一次 AI 诊断结果 |
-| POST | `/api/vision/analyze` | 立刻抓拍并分析一次 |
-| WS | `/ws` | 实时推送 |
+## 遥测来源与旧库
 
-## 调试技巧
+每条`sensor_reading`保存`data_source`：设备`device`、模拟`simulated`、来源未记录`unknown`。模拟HTTP接口强制标记；模拟脚本也携带字段。旧固件缺省按device保存。
 
-**没有硬件时怎么联调？** 两个终端各跑一个：
+`init_db()`会为旧表增加来源列，旧记录保留unknown，不删除、不猜测来源。升级后重启后端，网页刷新即可显示角标；模拟与实物并用同一设备编号仍会交替刷新，实物调试请停止模拟脚本。
+
+## 测试
 
 ```powershell
-# 终端 A —— 先启动 Mosquitto（本机已装好）
-cd D:\SmartAgriBrainRuntime\mosquitto
-.\mosquitto.exe -c mosquitto.conf
-
-# 终端 B —— 启动后端
-cd "D:\Lab\Embedded Curriculum Design\pro\backend"
-.\.venv\Scripts\Activate.ps1
-uvicorn app.main:app --reload
-
-# 终端 C —— 启动虚拟设备
-cd "D:\Lab\Embedded Curriculum Design\pro\backend"
-.\.venv\Scripts\Activate.ps1
-python scripts\sim_device.py --interval 3
+.venv/Scripts/python.exe -m pytest tests -q
 ```
 
-虚拟设备发的报文格式和真实 ESP32 固件一致，所以将来用真板子替换它时，
-后端和前端一行都不用改。
+`tests/conftest.py`在导入应用前禁用MQTT，指定独立client_id、临时数据库和图片目录，禁用付费AI与定时拍照。测试不会向实物发布指令。
 
-## 当前进度
-
-骨架已完成，可以跑通"**虚拟设备 → MQTT → 后端 → 数据库**"这条链路。
-下面这些还是空壳（代码里都留了 `TODO(阶段 X)`）：
-
-- 阈值闭环决策（`services/control_service.py`）
-- 图像抓拍与 DeepSeek 调用（`services/vision_service.py`）
-- WebSocket 主动推送
-- 数据入库后的实时推送给前端
+接口详情见[HTTP接口](../docs/api.md)、[MQTT契约](../docs/mqtt_topics.md)、[自动控制](../docs/automation_control.md)。

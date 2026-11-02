@@ -52,7 +52,7 @@ extern "C" {
  * 土壤探头标定仍属于本机私有，保存在 local_config.h。
  *
  * 没有 local_config.h 也能编译通过 —— 只是连不上网, 只能跑本地采样。
- * 这正是阶段 1 "先验串口、再上 WiFi" 想要的: 硬件没接好时也能先烧进去看读数。 */
+ * 本地采样不依赖后端或网络可用；网络配置缺失时也可查看串口读数。 */
 #if __has_include("generated_network_config.h")
 #include "generated_network_config.h"
 #endif
@@ -76,9 +76,4 @@ extern "C" {
 
 #ifdef __cplusplus
 }
-#endif
-
-/* Opt-in boot verification; remote-control firmware defaults to all outputs off. */
-#ifndef APP_ACTUATOR_STARTUP_TEST_ENABLE
-#define APP_ACTUATOR_STARTUP_TEST_ENABLE 0
 #endif
